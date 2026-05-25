@@ -1,0 +1,18 @@
+name: Supabase keep-alive
+# Pings Supabase every 3 days so the free-tier project never auto-pauses (which broke the app once).
+on:
+  schedule:
+    - cron: '17 7 */3 * *'   # 07:17 UTC, every 3rd day
+  workflow_dispatch:          # lets you run it manually from the Actions tab
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Supabase REST (keeps project awake)
+        run: |
+          code=$(curl -sS -o /dev/null -w "%{http_code}" \
+            "https://uubelxcdzgnhfhrzwlkc.supabase.co/rest/v1/jobs?select=job_id&limit=1" \
+            -H "apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV1YmVseGNkemduaGZocnp3bGtjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU1OTE4MTAsImV4cCI6MjA5MTE2NzgxMH0.z1km-BK2yrXKM7P2lNEbRGEcxd9MaLMJqkns6TH6rAg" \
+            -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV1YmVseGNkemduaGZocnp3bGtjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU1OTE4MTAsImV4cCI6MjA5MTE2NzgxMH0.z1km-BK2yrXKM7P2lNEbRGEcxd9MaLMJqkns6TH6rAg")
+          echo "Supabase responded: HTTP $code"
+          if [ "$code" != "200" ]; then echo "Unexpected status"; exit 1; fi
