@@ -1258,7 +1258,7 @@ async function loadWorkedDays(){
       dateMap[d].jobs.push(j);
     });
 
-    var todayMid=new Date(); todayMid.setHours(0,0,0,0);
+    var todayMid=new Date(); todayMid.setHours(23,59,59,999); // end of today so TODAY's logged jobs appear
     var dates=Object.keys(dateMap).filter(function(d){
       if(d==='unknown')return false;
       var pd=parseJobDate(d);
