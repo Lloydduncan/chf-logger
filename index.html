@@ -376,10 +376,9 @@ var DRIVER_ID=null, ACTIVE_JOB=null, ALL_JOBS=[], SESSION_EVENTS={}, expandedJob
 
 /* ---- SEQUENCE DEFINITION ---- */
 var EVENT_SEQ=[
-  'Left house','Arrived at car pickup','Vehicle checks start','Vehicle checks complete',
-  'Leaving car pickup','At driver holding area','At passenger pickup',
-  'Passengers onboard','Passengers dropped off','Job complete',
-  'Heading to next job','Return home journey start','Arrived home — day complete'
+  'Left house','At driver holding area','At passenger pickup',
+  'Passengers onboard','Passengers dropped off',
+  'Return home journey start','Arrived home — day complete'
 ];
 function getSequenceViolations(editedEventId,newIso){
   var ev=CURRENT_JOB_EVENTS.find(function(e){return e.event_id===editedEventId;});
@@ -404,20 +403,14 @@ var DAY_VIEW_DATE='', DAY_JOBS=[], DAY_EVENTS=[], EDITING_DAY={jobId:null,key:nu
 var SHORT_DAYS=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 var SHORT_MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 var DAY_START_EVENTS=[
-  {key:'Left house',icon:'🏠'},{key:'Arrived at car pickup',icon:'📍'},
-  {key:'Vehicle checks start',icon:'🔍'},{key:'Vehicle checks complete',icon:'✅'},
-  {key:'Leaving car pickup',icon:'🚗'}
+  {key:'Left house',icon:'🏠'}
 ];
 var ON_JOB_EVENTS=[
   {key:'At driver holding area',icon:'⏳'},{key:'At passenger pickup',icon:'📌'},
-  {key:'Passengers onboard',icon:'👤'},{key:'Passengers dropped off',icon:'🏁'},
-  {key:'Job complete',icon:'✔'},{key:'Heading to next job',icon:'➡'}
+  {key:'Passengers onboard',icon:'👤'},{key:'Passengers dropped off',icon:'🏁'}
 ];
 var VEHICLE_EVENTS=[
-  {key:'Arrived at car pickup',icon:'📍'},{key:'Vehicle checks start',icon:'🔍'},
-  {key:'Vehicle checks complete',icon:'✅'},{key:'Leaving car pickup',icon:'🚗'},
-  {key:'Refuelling vehicle',icon:'⛽'},{key:'Cleaning vehicle',icon:'🧹'},
-  {key:'Return car to office',icon:'🏢'}
+  {key:'Refuelling vehicle',icon:'⛽'},{key:'Cleaning vehicle',icon:'🧹'}
 ];
 var END_DAY_EVENTS=[
   {key:'Return home journey start',icon:'🚗'},{key:'Arrived home — day complete',icon:'🌙'}
@@ -875,9 +868,9 @@ function renderDayView(){
   // ── Jobs + vehicle events between them ─────────────────────────────────────
   DAY_JOBS.forEach(function(job,idx){
     var isLast=idx===DAY_JOBS.length-1;
-    var coreKeys=['At passenger pickup','Passengers onboard','Passengers dropped off','Job complete'];
+    var coreKeys=['At passenger pickup','Passengers onboard','Passengers dropped off'];
     var coreLogged=coreKeys.filter(function(k){return findDayEvts(job.job_id,k).length>0;}).length;
-    var jobClass=coreLogged===4?' evented':coreLogged>0?' partial':'';
+    var jobClass=coreLogged===3?' evented':coreLogged>0?' partial':'';
 
     h+='<div class="day-block'+jobClass+'">'+
       '<div class="day-block-hdr">'+
@@ -907,11 +900,7 @@ function renderDayView(){
     h+='</div>';
   });
 
-  // ── Car return (attributed to first job) ───────────────────────────────────
-  h+='<div class="day-block">'+
-    '<div class="day-block-hdr"><div class="day-block-title">Car Return</div></div>';
-  h+=renderDayEvtRow({key:'Return car to office',icon:'&#x1F3E2;'},firstJobId);
-  h+='</div>';
+  // (Car Return step removed — XEC vehicle kept at home, no car collection/return)
 
   // ── End of Day ──────────────────────────────────────────────────────────────
   var eodLogged=END_DAY_EVENTS.filter(function(ev){return findDayEvts(firstJobId,ev.key).length>0;}).length;
@@ -943,7 +932,7 @@ async function loadJobEvents(jobId){
   }catch(e){}
 }
 /* ---- JOBS PAGE ---- */
-var JOB_CORE_KEYS=['At passenger pickup','Passengers onboard','Passengers dropped off','Job complete'];
+var JOB_CORE_KEYS=['At passenger pickup','Passengers onboard','Passengers dropped off'];
 var JOB_COMPLETE_SET={};
 async function loadJobsPage(){
   JOBS_PAGE_ALL=[]; JOB_COMPLETE_SET={};
@@ -966,7 +955,7 @@ async function loadJobsPage(){
       evR.data.forEach(function(e){if(!byJob[e.job_id])byJob[e.job_id]={};byJob[e.job_id][e.event_type]=true;});
       Object.keys(byJob).forEach(function(jid){
         var count=JOB_CORE_KEYS.filter(function(k){return byJob[jid][k];}).length;
-        JOB_COMPLETE_SET[jid]=count===4?'complete':count>0?'partial':'none';
+        JOB_COMPLETE_SET[jid]=count===3?'complete':count>0?'partial':'none';
       });
     }
     renderJobsPage();
