@@ -1838,6 +1838,9 @@ function buildAnalysisHTML(){
 }
 
 init();
+/* Build stamp — bump on each change so the live version is verifiable in-app */
+var BUILD='2026-05-27 · tips breakdown';
+try{ var cps=document.querySelectorAll('.copyright'); for(var bi=0;bi<cps.length;bi++){ cps[bi].innerHTML+=' · <span style="color:var(--gold);">build '+BUILD+'</span>'; } }catch(e){}
 </script>
 </body>
 </html>
