@@ -885,13 +885,26 @@ function getDayQC(){
   if(ahT!==null&&prevDrop!==null&&ahT<prevDrop)out.push({lvl:'error',msg:'End of work day is before the last dropoff — check times.'});
   return out;
 }
+/* ---- VERIFIED / QC'd DAY FLAG (localStorage; Supabase later for multi-device) ---- */
+function isoKey(s){ if(!s)return ''; if(/^\d{4}-\d{2}-\d{2}/.test(s))return s.substring(0,10); var d=parseJobDate(s); if(!d)return s; return d.getUTCFullYear()+'-'+pad(d.getUTCMonth()+1)+'-'+pad(d.getUTCDate()); }
+function getVerifiedDays(){ try{return JSON.parse(localStorage.getItem('chf_verified_days')||'[]');}catch(e){return [];} }
+function isDayVerified(s){ return getVerifiedDays().indexOf(isoKey(s))>=0; }
+function setDayVerified(s,on){ var k=isoKey(s),arr=getVerifiedDays(),i=arr.indexOf(k); if(on&&i<0)arr.push(k); else if(!on&&i>=0)arr.splice(i,1); localStorage.setItem('chf_verified_days',JSON.stringify(arr)); }
+function toggleDayVerified(){ if(!DAY_VIEW_DATE)return; setDayVerified(DAY_VIEW_DATE,!isDayVerified(DAY_VIEW_DATE)); renderDayView(); }
 function renderDayQC(){
   var issues=getDayQC();
   if(issues.length===0){
     if(!DAY_EVENTS||DAY_EVENTS.length===0){
       return '<div style="background:var(--surface);border:0.5px solid var(--border2);border-radius:10px;padding:10px 14px;margin-bottom:1rem;font-size:13px;color:var(--text3);">Nothing logged for this day yet</div>';
     }
-    return '<div style="background:#141c14;border:0.5px solid var(--green);border-radius:10px;padding:10px 14px;margin-bottom:1rem;font-size:13px;color:var(--green);">✓ Day looks consistent</div>';
+    var dayVer=isDayVerified(DAY_VIEW_DATE);
+    var bdr=dayVer?'var(--gold)':'var(--green)';
+    return '<div style="background:#141c14;border:0.5px solid '+bdr+';border-radius:10px;padding:10px 14px;margin-bottom:1rem;">'+
+      '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">'+
+        '<span style="font-size:13px;color:'+bdr+';">'+(dayVer?'✓ Verified — checked &amp; consistent':'✓ Day looks consistent')+'</span>'+
+        '<button onclick="toggleDayVerified()" style="flex-shrink:0;font-family:inherit;cursor:pointer;font-size:12px;padding:6px 12px;border-radius:8px;border:0.5px solid '+(dayVer?'var(--border2)':'var(--gold)')+';background:'+(dayVer?'var(--surface)':'var(--gold)')+';color:'+(dayVer?'var(--text3)':'#1a1a1a')+';'+(dayVer?'':'font-weight:600;')+'">'+(dayVer?'Unverify':'Mark verified')+'</button>'+
+      '</div>'+
+    '</div>';
   }
   var hasErr=issues.some(function(i){return i.lvl==='error';});
   var col=hasErr?'var(--red)':'var(--gold)';
@@ -1376,7 +1389,7 @@ async function loadWorkedDays(){
         'border-radius:10px;padding:13px 14px;font-family:inherit;cursor:pointer;text-align:left;width:100%;">'+
         '<div>'+
           '<div style="font-size:14px;font-weight:500;">'+label+'</div>'+
-          '<div style="font-size:12px;color:'+(isSelected?'#1a1a1a55':'var(--text3)')+';">'+item.count+' event'+(item.count!==1?'s':'')+' · '+jobLabels+'</div>'+
+          '<div style="font-size:12px;color:'+(isSelected?'#1a1a1a55':'var(--text3)')+';">'+item.count+' event'+(item.count!==1?'s':'')+' · '+jobLabels+(isDayVerified(date)?' · <span style="color:'+(isSelected?'#1a1a1a':'var(--gold)')+';font-weight:600;">✓ verified</span>':'')+'</div>'+
         '</div>'+
         '<div style="font-size:18px;">'+(isSelected?'✓':'›')+'</div>'+
       '</button>';
@@ -1408,9 +1421,6 @@ function computeDayMetrics(jobs,events){
   }
   jobs.forEach(function(j){
     var es=byJob[j.job_id]||[];
-    var lh=es.filter(function(e){return e.event_type==='Left house';}).map(function(e){return +new Date(e.timestamp);});
-    var ah=es.filter(function(e){return e.event_type.indexOf('Arrived home')>=0;}).map(function(e){return +new Date(e.timestamp);});
-    if(lh.length&&ah.length){ var d=(Math.max.apply(null,ah)-Math.min.apply(null,lh))/60000; if(d>0)m.oohMin+=d; }
     var pu=es.filter(function(e){return e.event_type==='At passenger pickup';})[0];
     var ob=es.filter(function(e){return e.event_type==='Passengers onboard';})[0];
     var dr=es.filter(function(e){return e.event_type==='Passengers dropped off';})[0];
@@ -1420,6 +1430,18 @@ function computeDayMetrics(jobs,events){
     m.waitMin+=pairedMins(es,'Waiting period start','Waiting period end');
     m.fees+=parseFloat(j.earnings)||0; m.tips+=parseFloat(j.tips)||0;
   });
+  // Out-of-home time is computed PER DAY (not per job): earliest Left house → latest
+  // Arrived home on each calendar date, summed. Robust even if the boundary events are
+  // attributed to different jobs within the same day.
+  var jobDate={}; jobs.forEach(function(j){ jobDate[j.job_id]=j.job_date||''; });
+  var dayLH={}, dayAH={};
+  events.forEach(function(e){
+    var d=jobDate[e.job_id]; if(!d)return;
+    var t=+new Date(e.timestamp);
+    if(e.event_type==='Left house'){ if(dayLH[d]==null||t<dayLH[d])dayLH[d]=t; }
+    else if(e.event_type.indexOf('Arrived home')>=0){ if(dayAH[d]==null||t>dayAH[d])dayAH[d]=t; }
+  });
+  Object.keys(dayLH).forEach(function(d){ if(dayAH[d]!=null){ var span=(dayAH[d]-dayLH[d])/60000; if(span>0)m.oohMin+=span; } });
   m.total=m.fees+m.tips;
   m.oohRate=m.oohMin>0?m.fees/m.oohMin*60:null;
   m.oohRateTip=m.oohMin>0?m.total/m.oohMin*60:null;
@@ -1520,6 +1542,8 @@ async function loadReviewV2(date){
         '<div class="stat-card"><div class="stat-label">Own Time (usable)</div><div class="stat-value" style="font-size:18px;color:var(--green);">'+fmtMins(M.ownMin)+'</div><div style="font-size:11px;color:var(--text3);margin-top:2px;">home / free</div></div>'+
         '<div class="stat-card"><div class="stat-label">Waiting (dead)</div><div class="stat-value" style="font-size:18px;color:var(--red);">'+fmtMins(M.waitMin)+'</div><div style="font-size:11px;color:var(--text3);margin-top:2px;">stuck / standby</div></div>'+
         '</div>';
+      var ownWaitD=M.ownMin+M.waitMin, usablePctD=ownWaitD>0?Math.round(M.ownMin/ownWaitD*100):0;
+      if(ownWaitD>0)html+='<div style="font-size:12px;color:var(--text3);text-align:center;margin-bottom:1rem;">Of your between-job time, <span style="color:var(--green);">'+usablePctD+'% usable</span> own time · <span style="color:var(--red);">'+(100-usablePctD)+'% dead waiting</span></div>';
     }
     var otherMin=Math.max(0,M.oohMin-M.engMin);
     var ownMin=Math.min(M.ownMin,otherMin), waitMin=Math.min(M.waitMin,Math.max(0,otherMin-ownMin));
@@ -1764,7 +1788,7 @@ function buildAnalysisHTML(){
     h+='<div onclick="analysisJobTap(\''+(job.job_date||'')+'\',\''+op+'\')" style="background:var(--surface);border:0.5px solid '+(ok?'var(--border2)':'var(--gold-dim)')+';border-radius:10px;padding:12px 14px;margin-bottom:6px;cursor:pointer;">'+
       '<div style="display:flex;justify-content:space-between;align-items:flex-start;">'+
         '<div style="flex:1;min-width:0;">'+
-          '<div style="font-size:15px;color:var(--gold);font-weight:600;">'+job.job_id+'<span style="font-size:11px;color:var(--text3);font-weight:400;"> · '+op+'</span>'+(ok?'':' <span style="font-size:11px;color:var(--gold);">⚠</span>')+'</div>'+
+          '<div style="font-size:15px;color:var(--gold);font-weight:600;">'+job.job_id+'<span style="font-size:11px;color:var(--text3);font-weight:400;"> · '+op+'</span>'+(isDayVerified(job.job_date)?' <span style="font-size:11px;color:var(--green);">✓</span>':'')+(ok?'':' <span style="font-size:11px;color:var(--gold);">⚠</span>')+'</div>'+
           '<div style="font-size:11px;color:var(--text3);margin-top:2px;">'+formatJobDate(job.job_date)+(job.job_time?' · '+job.job_time.substring(0,5):'')+'</div>'+
           '<div style="font-size:11px;color:var(--text3);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+(job.pickup||'')+(job.dropoff?' → '+job.dropoff:'')+'</div>'+
         '</div>'+
