@@ -1430,18 +1430,20 @@ function computeDayMetrics(jobs,events){
     m.waitMin+=pairedMins(es,'Waiting period start','Waiting period end');
     m.fees+=parseFloat(j.earnings)||0; m.tips+=parseFloat(j.tips)||0;
   });
-  // Out-of-home time is computed PER DAY (not per job): earliest Left house → latest
-  // Arrived home on each calendar date, summed. Robust even if the boundary events are
-  // attributed to different jobs within the same day.
-  var jobDate={}; jobs.forEach(function(j){ jobDate[j.job_id]=j.job_date||''; });
+  // Out-of-home time is computed PER DAY, keyed by each event's OWN calendar date (not the
+  // job_date) and scoped to the jobs passed in — so a stray/mis-dated boundary event can't
+  // merge two days into one giant span. Each day's span is capped at 24h as a final guard
+  // against bad timestamps (e.g. a Left house mis-logged on the wrong date).
+  var inScope={}; jobs.forEach(function(j){ inScope[j.job_id]=true; });
   var dayLH={}, dayAH={};
   events.forEach(function(e){
-    var d=jobDate[e.job_id]; if(!d)return;
-    var t=+new Date(e.timestamp);
+    if(!inScope[e.job_id])return;
+    var dt=new Date(e.timestamp); if(isNaN(+dt))return;
+    var d=dt.toISOString().slice(0,10), t=+dt;
     if(e.event_type==='Left house'){ if(dayLH[d]==null||t<dayLH[d])dayLH[d]=t; }
     else if(e.event_type.indexOf('Arrived home')>=0){ if(dayAH[d]==null||t>dayAH[d])dayAH[d]=t; }
   });
-  Object.keys(dayLH).forEach(function(d){ if(dayAH[d]!=null){ var span=(dayAH[d]-dayLH[d])/60000; if(span>0)m.oohMin+=span; } });
+  Object.keys(dayLH).forEach(function(d){ if(dayAH[d]!=null){ var span=(dayAH[d]-dayLH[d])/60000; if(span>0&&span<=1440)m.oohMin+=span; } });
   m.total=m.fees+m.tips;
   m.oohRate=m.oohMin>0?m.fees/m.oohMin*60:null;
   m.oohRateTip=m.oohMin>0?m.total/m.oohMin*60:null;
@@ -1733,6 +1735,29 @@ function buildAnalysisHTML(){
     h+='<div style="font-size:12px;color:var(--text3);text-align:center;margin-bottom:1rem;">Of your between-job time, <span style="color:var(--green);">'+usablePct+'% usable</span> own time · <span style="color:var(--red);">'+(100-usablePct)+'% dead waiting</span></div>';
   }
 
+  // ---- Tips breakdown (placed high — tips are a big share of earnings) ----
+  var tipped=scopeJobs.filter(function(j){return (parseFloat(j.tips)||0)>0;})
+    .sort(function(a,b){return (parseFloat(b.tips)||0)-(parseFloat(a.tips)||0);});
+  if(tipped.length){
+    h+='<div class="section"><div class="section-label">Tips Breakdown · '+money(M.tips)+' total</div>';
+    tipped.forEach(function(j){
+      var t=parseFloat(j.tips)||0, f=parseFloat(j.earnings)||0;
+      var pctOfTips=M.tips>0?Math.round(t/M.tips*100):0;
+      h+='<div style="display:flex;justify-content:space-between;align-items:center;background:var(--surface);border:0.5px solid var(--border2);border-radius:10px;padding:10px 14px;margin-bottom:6px;">'+
+        '<div style="min-width:0;flex:1;">'+
+          '<div style="font-size:14px;color:var(--gold);font-weight:600;">'+j.job_id+'<span style="font-size:11px;color:var(--text3);font-weight:400;"> · '+operatorOf(j)+'</span></div>'+
+          '<div style="font-size:11px;color:var(--text3);margin-top:2px;">'+formatJobDate(j.job_date)+(f?' · on '+money(f)+' fee':'')+'</div>'+
+        '</div>'+
+        '<div style="text-align:right;flex-shrink:0;margin-left:10px;">'+
+          '<div style="font-size:15px;color:var(--green);font-weight:600;">'+money(t)+'</div>'+
+          '<div style="font-size:11px;color:var(--text3);">'+pctOfTips+'% of tips</div>'+
+        '</div>'+
+      '</div>';
+    });
+    h+='<div style="font-size:11px;color:var(--text3);line-height:1.5;margin-top:2px;">Tips are '+(M.total>0?Math.round(M.tipDep):0)+'% of total earned ('+money(M.tips)+' of '+money(M.total)+') · '+tipped.length+' of '+M.jobs+' job'+(M.jobs!==1?'s':'')+' tipped.</div>';
+    h+='</div>';
+  }
+
   var otherMin=Math.max(0,M.oohMin-M.engMin);
   var ownM=Math.min(M.ownMin,otherMin), waitM=Math.min(M.waitMin,Math.max(0,otherMin-ownM));
   var residMin=Math.max(0,otherMin-ownM-waitM);
@@ -1767,29 +1792,6 @@ function buildAnalysisHTML(){
       card('Best',rate(best.rate),'var(--green)',formatJobDate(best.date))+
       card('Worst',rate(worst.rate),'var(--red)',formatJobDate(worst.date))+
     '</div></div>';
-  }
-
-  // ---- Tips breakdown (per tipped job) ----
-  var tipped=scopeJobs.filter(function(j){return (parseFloat(j.tips)||0)>0;})
-    .sort(function(a,b){return (parseFloat(b.tips)||0)-(parseFloat(a.tips)||0);});
-  if(tipped.length){
-    h+='<div class="section"><div class="section-label">Tips Breakdown · '+money(M.tips)+' total</div>';
-    tipped.forEach(function(j){
-      var t=parseFloat(j.tips)||0, f=parseFloat(j.earnings)||0;
-      var pctOfTips=M.tips>0?Math.round(t/M.tips*100):0;
-      h+='<div style="display:flex;justify-content:space-between;align-items:center;background:var(--surface);border:0.5px solid var(--border2);border-radius:10px;padding:10px 14px;margin-bottom:6px;">'+
-        '<div style="min-width:0;flex:1;">'+
-          '<div style="font-size:14px;color:var(--gold);font-weight:600;">'+j.job_id+'<span style="font-size:11px;color:var(--text3);font-weight:400;"> · '+operatorOf(j)+'</span></div>'+
-          '<div style="font-size:11px;color:var(--text3);margin-top:2px;">'+formatJobDate(j.job_date)+(f?' · on '+money(f)+' fee':'')+'</div>'+
-        '</div>'+
-        '<div style="text-align:right;flex-shrink:0;margin-left:10px;">'+
-          '<div style="font-size:15px;color:var(--green);font-weight:600;">'+money(t)+'</div>'+
-          '<div style="font-size:11px;color:var(--text3);">'+pctOfTips+'% of tips</div>'+
-        '</div>'+
-      '</div>';
-    });
-    h+='<div style="font-size:11px;color:var(--text3);line-height:1.5;margin-top:2px;">Tips are '+(M.total>0?Math.round(M.tipDep):0)+'% of total earned ('+money(M.tips)+' of '+money(M.total)+') · '+tipped.length+' of '+M.jobs+' job'+(M.jobs!==1?'s':'')+' tipped.</div>';
-    h+='</div>';
   }
 
   var sj=scopeJobs.slice().sort(function(a,b){
@@ -1839,7 +1841,7 @@ function buildAnalysisHTML(){
 
 init();
 /* Build stamp — bump on each change so the live version is verifiable in-app */
-var BUILD='2026-05-27 · tips breakdown';
+var BUILD='2026-05-27b · tips up + ooh fix';
 try{ var cps=document.querySelectorAll('.copyright'); for(var bi=0;bi<cps.length;bi++){ cps[bi].innerHTML+=' · <span style="color:var(--gold);">build '+BUILD+'</span>'; } }catch(e){}
 </script>
 </body>
