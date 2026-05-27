@@ -789,6 +789,7 @@ async function saveDayLog(){
   }
 }
 function renderTipRow(jobId){
+  if(!tipsOn())return ''; // tips hidden globally — don't show the logger row
   var job=DAY_JOBS.find(function(j){return j.job_id===jobId;})||{};
   var tipVal=parseFloat(job.tips)||0;
   var isEditing=EDITING_TIP===jobId;
@@ -1408,9 +1409,14 @@ function selectReviewDate(date){
 /* ---- REVIEW (company-segmented) ---- */
 var REVIEW_COMPANY='XEC';
 function operatorOf(job){ return ((job&&job.client||'').toLowerCase().indexOf('xec')>=0)?'XEC':'EET'; }
+/* ---- TIPS visibility toggle (for users who don't declare tips). When off, tips are
+   excluded from ALL earnings/rates and hidden everywhere. localStorage chf_show_tips. ---- */
+function tipsOn(){ return localStorage.getItem('chf_show_tips')!=='0'; }
+function toggleTips(){ localStorage.setItem('chf_show_tips', tipsOn()?'0':'1'); var el=document.getElementById('review-content'); if(el&&ANALYSIS_CACHE)el.innerHTML=buildAnalysisHTML(); }
 function computeDayMetrics(jobs,events){
   var byJob={}; events.forEach(function(e){ if(!byJob[e.job_id])byJob[e.job_id]=[]; byJob[e.job_id].push(e); });
   var m={oohMin:0,engMin:0,pobMin:0,ownMin:0,waitMin:0,fees:0,tips:0,jobs:jobs.length};
+  var incTips=tipsOn();
   // Sum paired start/end durations within a job (sort each side, pair by index)
   function pairedMins(es,st,en){
     var s=es.filter(function(e){return e.event_type===st;}).map(function(e){return +new Date(e.timestamp);}).sort(function(a,b){return a-b;});
@@ -1428,7 +1434,7 @@ function computeDayMetrics(jobs,events){
     if(ob&&dr){ var d3=(+new Date(dr.timestamp)-+new Date(ob.timestamp))/60000; if(d3>0)m.pobMin+=d3; }
     m.ownMin+=pairedMins(es,'Own time start','Own time end');
     m.waitMin+=pairedMins(es,'Waiting period start','Waiting period end');
-    m.fees+=parseFloat(j.earnings)||0; m.tips+=parseFloat(j.tips)||0;
+    m.fees+=parseFloat(j.earnings)||0; if(incTips)m.tips+=parseFloat(j.tips)||0;
   });
   // Out-of-home time is computed PER DAY, keyed by each event's OWN calendar date (not the
   // job_date) and scoped to the jobs passed in — so a stray/mis-dated boundary event can't
@@ -1527,7 +1533,7 @@ async function loadReviewV2(date){
     html+='<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:8px;">'+
       '<div class="stat-card"><div class="stat-label">Out of Home</div><div class="stat-value" style="font-size:18px;color:var(--gold);">'+fmtMins(M.oohMin)+'</div></div>'+
       '<div class="stat-card"><div class="stat-label">With Passenger</div><div class="stat-value" style="font-size:18px;color:var(--green);">'+fmtMins(M.engMin)+'</div></div>'+
-      '<div class="stat-card"><div class="stat-label">Tip Dependency</div><div class="stat-value" style="font-size:18px;color:var(--text);">'+(M.total>0?Math.round(M.tipDep)+'%':'—')+'</div></div>'+
+      '<div class="stat-card"><div class="stat-label">Tip Dependency</div><div class="stat-value" style="font-size:18px;color:var(--text);">'+(tipsOn()?(M.total>0?Math.round(M.tipDep)+'%':'—'):'—')+'</div></div>'+
       '</div>';
     if(M.total>0){
       html+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">'+
@@ -1576,7 +1582,7 @@ async function loadReviewV2(date){
       var ob=jevs.filter(function(e){return e.event_type==='Passengers onboard';})[0];
       var dr=jevs.filter(function(e){return e.event_type==='Passengers dropped off';})[0];
       var onMins=(ob&&dr)?(new Date(dr.timestamp)-new Date(ob.timestamp))/60000:null;
-      var je=parseFloat(job.earnings)||0, jt=parseFloat(job.tips)||0;
+      var je=parseFloat(job.earnings)||0, jt=tipsOn()?(parseFloat(job.tips)||0):0;
       html+='<div style="background:var(--surface);border:0.5px solid var(--border2);border-radius:10px;padding:13px 14px;margin-bottom:6px;">'+
         '<div style="display:flex;justify-content:space-between;align-items:flex-start;">'+
           '<div style="flex:1;min-width:0;">'+
@@ -1619,14 +1625,14 @@ function companyRollupTable(jobs,events){
     row('Own time (usable)',fmtMins(E.ownMin),fmtMins(X.ownMin))+
     row('Waiting (dead)',fmtMins(E.waitMin),fmtMins(X.waitMin))+
     row('Fees',money(E.fees),money(X.fees))+
-    row('Tips',money(E.tips),money(X.tips))+
+    (tipsOn()?row('Tips',money(E.tips),money(X.tips)):'')+
     row('Total',money(E.total),money(X.total))+
     row('£/job avg',rate(E.perJob),rate(X.perJob))+
     row('£/day avg',rate(E.perDay),rate(X.perDay))+
     row('Out-of-home £/hr',rate(E.oohRate),rate(X.oohRate),true)+
-    row('… with tips',rate(E.oohRateTip),rate(X.oohRateTip))+
+    (tipsOn()?row('… with tips',rate(E.oohRateTip),rate(X.oohRateTip)):'')+
     row('Passenger £/hr',rate(E.engRate),rate(X.engRate))+
-    row('Tip dependency',Math.round(E.tipDep)+'%',Math.round(X.tipDep)+'%')+
+    (tipsOn()?row('Tip dependency',Math.round(E.tipDep)+'%',Math.round(X.tipDep)+'%'):'')+
   '</table>';
 }
 async function renderCompare(){
@@ -1698,6 +1704,13 @@ function buildAnalysisHTML(){
     aPill(P==='all','All time',"setAnalysisPeriod('all')")+
   '</div>';
 
+  // Tips visibility toggle — always shown so it can be switched back on
+  var TIPS=tipsOn();
+  h+='<div style="display:flex;justify-content:space-between;align-items:center;background:var(--surface);border:0.5px solid var(--border2);border-radius:8px;padding:8px 12px;margin-bottom:1rem;">'+
+    '<span style="font-size:12px;color:var(--text3);">Tips '+(TIPS?'included in earnings &amp; analysis':'hidden — not declared')+'</span>'+
+    '<button onclick="toggleTips()" style="font-family:inherit;cursor:pointer;font-size:12px;padding:6px 12px;border-radius:8px;border:0.5px solid '+(TIPS?'var(--gold)':'var(--border2)')+';background:'+(TIPS?'var(--gold)':'var(--surface)')+';color:'+(TIPS?'#1a1a1a':'var(--text3)')+';'+(TIPS?'font-weight:600;':'')+'">Tips: '+(TIPS?'On':'Off')+'</button>'+
+  '</div>';
+
   if(!scopeJobs.length){
     h+='<div class="log-empty">No '+(C==='All'?'':C+' ')+'jobs in '+periodLabel(P).toLowerCase()+'</div>';
     return h;
@@ -1716,14 +1729,14 @@ function buildAnalysisHTML(){
 
   function card(lbl,val,col,sub){return '<div class="stat-card"><div class="stat-label">'+lbl+'</div><div class="stat-value" style="font-size:18px;color:'+(col||'var(--text)')+';">'+val+'</div>'+(sub?'<div style="font-size:11px;color:var(--text3);margin-top:2px;">'+sub+'</div>':'')+'</div>';}
   h+='<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:8px;">'+
-    card('Earned',money(M.total),'var(--green)',money(M.fees)+' + '+money(M.tips)+' tip')+
+    card('Earned',money(M.total),'var(--green)',M.tips?money(M.fees)+' + '+money(M.tips)+' tip':money(M.fees)+' fees')+
     card('£/job avg',rate(M.perJob))+
     card('£/day avg',rate(M.perDay))+
   '</div>';
   h+='<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:8px;">'+
-    card('Out-of-home £/hr',rate(M.oohRate),null,M.oohRateTip!=null?rate(M.oohRateTip)+' w/tips':'')+
+    card('Out-of-home £/hr',rate(M.oohRate),null,(M.tips>0&&M.oohRateTip!=null)?rate(M.oohRateTip)+' w/tips':'')+
     card('Passenger £/hr',rate(M.engRate))+
-    card('Tip dependency',M.total>0?Math.round(M.tipDep)+'%':'—')+
+    card('Tip dependency',TIPS?(M.total>0?Math.round(M.tipDep)+'%':'—'):'—')+
   '</div>';
   h+='<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-bottom:8px;">'+
     card('Out of home',fmtMins(M.oohMin),'var(--gold)')+
@@ -1735,27 +1748,54 @@ function buildAnalysisHTML(){
     h+='<div style="font-size:12px;color:var(--text3);text-align:center;margin-bottom:1rem;">Of your between-job time, <span style="color:var(--green);">'+usablePct+'% usable</span> own time · <span style="color:var(--red);">'+(100-usablePct)+'% dead waiting</span></div>';
   }
 
-  // ---- Tips breakdown (placed high — tips are a big share of earnings) ----
-  var tipped=scopeJobs.filter(function(j){return (parseFloat(j.tips)||0)>0;})
-    .sort(function(a,b){return (parseFloat(b.tips)||0)-(parseFloat(a.tips)||0);});
-  if(tipped.length){
-    h+='<div class="section"><div class="section-label">Tips Breakdown · '+money(M.tips)+' total</div>';
-    tipped.forEach(function(j){
-      var t=parseFloat(j.tips)||0, f=parseFloat(j.earnings)||0;
-      var pctOfTips=M.tips>0?Math.round(t/M.tips*100):0;
-      h+='<div style="display:flex;justify-content:space-between;align-items:center;background:var(--surface);border:0.5px solid var(--border2);border-radius:10px;padding:10px 14px;margin-bottom:6px;">'+
-        '<div style="min-width:0;flex:1;">'+
-          '<div style="font-size:14px;color:var(--gold);font-weight:600;">'+j.job_id+'<span style="font-size:11px;color:var(--text3);font-weight:400;"> · '+operatorOf(j)+'</span></div>'+
-          '<div style="font-size:11px;color:var(--text3);margin-top:2px;">'+formatJobDate(j.job_date)+(f?' · on '+money(f)+' fee':'')+'</div>'+
-        '</div>'+
-        '<div style="text-align:right;flex-shrink:0;margin-left:10px;">'+
-          '<div style="font-size:15px;color:var(--green);font-weight:600;">'+money(t)+'</div>'+
-          '<div style="font-size:11px;color:var(--text3);">'+pctOfTips+'% of tips</div>'+
-        '</div>'+
+  // ---- Tips analysis: stats + per-client + per-job (only when tips are shown) ----
+  if(TIPS){
+    var tippedJobs=scopeJobs.filter(function(j){return (parseFloat(j.tips)||0)>0;});
+    if(tippedJobs.length){
+      var totalTips=0, biggest=0, smallest=null, feeOnTipped=0;
+      tippedJobs.forEach(function(j){ var t=parseFloat(j.tips)||0; totalTips+=t; if(t>biggest)biggest=t; if(smallest==null||t<smallest)smallest=t; feeOnTipped+=parseFloat(j.earnings)||0; });
+      var nT=tippedJobs.length;
+      var freq=Math.round(nT/scopeJobs.length*100);
+      var tipVsFee=feeOnTipped>0?Math.round(totalTips/feeOnTipped*100):null;
+      h+='<div class="section"><div class="section-label">Tips Analysis · '+money(totalTips)+' total</div>';
+      h+='<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:8px;">'+
+        card('Jobs tipped',nT+' / '+scopeJobs.length,'var(--green)',freq+'% of jobs')+
+        card('Avg tip (tipped)',money(totalTips/nT))+
+        card('Avg tip (all jobs)',money(totalTips/scopeJobs.length))+
       '</div>';
-    });
-    h+='<div style="font-size:11px;color:var(--text3);line-height:1.5;margin-top:2px;">Tips are '+(M.total>0?Math.round(M.tipDep):0)+'% of total earned ('+money(M.tips)+' of '+money(M.total)+') · '+tipped.length+' of '+M.jobs+' job'+(M.jobs!==1?'s':'')+' tipped.</div>';
-    h+='</div>';
+      h+='<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:8px;">'+
+        card('Biggest tip',money(biggest),'var(--green)')+
+        card('Smallest tip',money(smallest||0))+
+        card('Tip vs fee',tipVsFee!=null?tipVsFee+'%':'—',null,'tips ÷ fees')+
+      '</div>';
+      // By client
+      var byClient={};
+      scopeJobs.forEach(function(j){ var c=j.client||'(no client)'; if(!byClient[c])byClient[c]={jobs:0,tipped:0,tips:0}; byClient[c].jobs++; var t=parseFloat(j.tips)||0; if(t>0){byClient[c].tipped++; byClient[c].tips+=t;} });
+      var clients=Object.keys(byClient).filter(function(c){return byClient[c].tips>0;}).sort(function(a,b){return byClient[b].tips-byClient[a].tips;});
+      if(clients.length){
+        h+='<div class="section-label" style="padding-top:4px;">By client</div>';
+        clients.forEach(function(c){
+          var cc=byClient[c], avg=cc.tipped>0?cc.tips/cc.tipped:0, cf=Math.round(cc.tipped/cc.jobs*100);
+          h+='<div style="display:flex;justify-content:space-between;align-items:center;background:var(--surface);border:0.5px solid var(--border2);border-radius:10px;padding:10px 14px;margin-bottom:6px;">'+
+            '<div style="min-width:0;flex:1;"><div style="font-size:14px;color:var(--text);font-weight:500;">'+c+'</div>'+
+              '<div style="font-size:11px;color:var(--text3);margin-top:2px;">'+cc.tipped+' of '+cc.jobs+' tipped · '+cf+'% · avg '+money(avg)+'</div></div>'+
+            '<div style="font-size:15px;color:var(--green);font-weight:600;margin-left:10px;flex-shrink:0;">'+money(cc.tips)+'</div>'+
+          '</div>';
+        });
+      }
+      // By job
+      h+='<div class="section-label" style="padding-top:4px;">By job</div>';
+      tippedJobs.slice().sort(function(a,b){return (parseFloat(b.tips)||0)-(parseFloat(a.tips)||0);}).forEach(function(j){
+        var t=parseFloat(j.tips)||0, f=parseFloat(j.earnings)||0, pctOfTips=totalTips>0?Math.round(t/totalTips*100):0;
+        h+='<div style="display:flex;justify-content:space-between;align-items:center;background:var(--surface);border:0.5px solid var(--border2);border-radius:10px;padding:10px 14px;margin-bottom:6px;">'+
+          '<div style="min-width:0;flex:1;"><div style="font-size:14px;color:var(--gold);font-weight:600;">'+j.job_id+'<span style="font-size:11px;color:var(--text3);font-weight:400;"> · '+(j.client||operatorOf(j))+'</span></div>'+
+            '<div style="font-size:11px;color:var(--text3);margin-top:2px;">'+formatJobDate(j.job_date)+(f?' · on '+money(f)+' fee':'')+'</div></div>'+
+          '<div style="text-align:right;flex-shrink:0;margin-left:10px;"><div style="font-size:15px;color:var(--green);font-weight:600;">'+money(t)+'</div><div style="font-size:11px;color:var(--text3);">'+pctOfTips+'% of tips</div></div>'+
+        '</div>';
+      });
+      h+='<div style="font-size:11px;color:var(--text3);line-height:1.5;margin-top:2px;">Tips are '+(M.total>0?Math.round(M.tipDep):0)+'% of total earned ('+money(totalTips)+' of '+money(M.total)+').</div>';
+      h+='</div>';
+    }
   }
 
   var otherMin=Math.max(0,M.oohMin-M.engMin);
@@ -1804,7 +1844,7 @@ function buildAnalysisHTML(){
   sj.forEach(function(job){
     var jev=scopeEvents.filter(function(e){return e.job_id===job.job_id;});
     var jm=computeDayMetrics([job],jev);
-    var fee=parseFloat(job.earnings)||0, tip=parseFloat(job.tips)||0;
+    var fee=parseFloat(job.earnings)||0, tip=TIPS?(parseFloat(job.tips)||0):0;
     var perHr=jm.engMin>0?fee/jm.engMin*60:null;
     var pk=jev.filter(function(e){return e.event_type==='At passenger pickup';}).length;
     var dr=jev.filter(function(e){return e.event_type==='Passengers dropped off';}).length;
@@ -1841,7 +1881,7 @@ function buildAnalysisHTML(){
 
 init();
 /* Build stamp — bump on each change so the live version is verifiable in-app */
-var BUILD='2026-05-27b · tips up + ooh fix';
+var BUILD='2026-05-27c · tip stats + per-client + toggle';
 try{ var cps=document.querySelectorAll('.copyright'); for(var bi=0;bi<cps.length;bi++){ cps[bi].innerHTML+=' · <span style="color:var(--gold);">build '+BUILD+'</span>'; } }catch(e){}
 </script>
 </body>
