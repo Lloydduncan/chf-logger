@@ -336,9 +336,10 @@
   </div>
 
   <div class="tab-row" style="margin-bottom:0.75rem;">
-    <button class="tab-btn active" id="rc-tab-XEC" onclick="setReviewCompany('XEC')">XEC</button>
-    <button class="tab-btn" id="rc-tab-EET" onclick="setReviewCompany('EET')">EET</button>
-    <button class="tab-btn" id="rc-tab-compare" onclick="setReviewCompany('compare')">Compare</button>
+    <button class="tab-btn active" id="rc-tab-XEC" style="padding:11px 4px;font-size:13px;" onclick="setReviewCompany('XEC')">XEC</button>
+    <button class="tab-btn" id="rc-tab-EET" style="padding:11px 4px;font-size:13px;" onclick="setReviewCompany('EET')">EET</button>
+    <button class="tab-btn" id="rc-tab-compare" style="padding:11px 4px;font-size:13px;" onclick="setReviewCompany('compare')">Compare</button>
+    <button class="tab-btn" id="rc-tab-analysis" style="padding:11px 4px;font-size:13px;" onclick="setReviewCompany('analysis')">Analysis</button>
   </div>
   <div id="worked-days-list" style="margin-bottom:1rem;"></div>
 
@@ -1429,9 +1430,10 @@ function computeDayMetrics(jobs,events){
 }
 function setReviewCompany(c){
   REVIEW_COMPANY=c; REVIEW_SELECTED_DATE=null;
-  ['XEC','EET','compare'].forEach(function(k){ var b=document.getElementById('rc-tab-'+k); if(b)b.className='tab-btn'+(k===c?' active':''); });
+  ['XEC','EET','compare','analysis'].forEach(function(k){ var b=document.getElementById('rc-tab-'+k); if(b){var on=k===c;b.className='tab-btn'+(on?' active':'');b.style.padding='11px 4px';b.style.fontSize='13px';} });
   var dl=document.getElementById('worked-days-list'), rc=document.getElementById('review-content');
-  if(c==='compare'){ if(dl)dl.style.display='none'; renderCompare(); }
+  if(c==='analysis'){ if(dl)dl.style.display='none'; renderAnalysis(); }
+  else if(c==='compare'){ if(dl)dl.style.display='none'; renderCompare(); }
   else { if(dl)dl.style.display='block'; loadWorkedDays(); if(rc)rc.innerHTML='<div class="log-empty">Select a '+c+' day above to view</div>'; }
 }
 function openReview(){ setReviewCompany(REVIEW_COMPANY); }
@@ -1568,6 +1570,39 @@ async function loadReviewV2(date){
   }catch(e){el.innerHTML='<div class="log-empty">Could not load review</div>';}
 }
 
+/* Per-company EET-vs-XEC table — shared by Compare and Analysis. Pass already-event-filtered jobs. */
+function companyRollupTable(jobs,events){
+  var ops={EET:{jobs:[],dates:{}},XEC:{jobs:[],dates:{}}};
+  jobs.forEach(function(j){ var op=operatorOf(j); ops[op].jobs.push(j); if(j.job_date)ops[op].dates[j.job_date]=true; });
+  var data={};
+  ['EET','XEC'].forEach(function(op){ var m=computeDayMetrics(ops[op].jobs,events); m.days=Object.keys(ops[op].dates).length; m.perJob=m.jobs>0?m.total/m.jobs:null; m.perDay=m.days>0?m.total/m.days:null; data[op]=m; });
+  var rate=function(x){return x!=null?'£'+x.toFixed(2):'—';};
+  var money=function(x){return '£'+(x||0).toFixed(2);};
+  var E=data.EET,X=data.XEC;
+  function row(lbl,e,x,hi){ return '<tr>'+
+    '<td style="padding:8px 6px;font-size:12px;color:var(--text3);border-bottom:0.5px solid var(--border);">'+lbl+'</td>'+
+    '<td style="padding:8px 6px;font-size:14px;color:var(--text);text-align:right;border-bottom:0.5px solid var(--border);'+(hi?'font-weight:600;':'')+'">'+e+'</td>'+
+    '<td style="padding:8px 6px;font-size:14px;color:var(--gold);text-align:right;border-bottom:0.5px solid var(--border);'+(hi?'font-weight:600;':'')+'">'+x+'</td>'+
+  '</tr>'; }
+  return '<table style="width:100%;border-collapse:collapse;">'+
+    '<tr><td style="padding:8px 6px;"></td><td style="padding:8px 6px;font-size:13px;color:var(--text2);text-align:right;font-weight:600;">EET</td><td style="padding:8px 6px;font-size:13px;color:var(--gold);text-align:right;font-weight:600;">XEC</td></tr>'+
+    row('Days worked',E.days,X.days)+
+    row('Jobs',E.jobs,X.jobs)+
+    row('Out-of-home',fmtMins(E.oohMin),fmtMins(X.oohMin))+
+    row('With passenger',fmtMins(E.engMin),fmtMins(X.engMin))+
+    row('Own time (usable)',fmtMins(E.ownMin),fmtMins(X.ownMin))+
+    row('Waiting (dead)',fmtMins(E.waitMin),fmtMins(X.waitMin))+
+    row('Fees',money(E.fees),money(X.fees))+
+    row('Tips',money(E.tips),money(X.tips))+
+    row('Total',money(E.total),money(X.total))+
+    row('£/job avg',rate(E.perJob),rate(X.perJob))+
+    row('£/day avg',rate(E.perDay),rate(X.perDay))+
+    row('Out-of-home £/hr',rate(E.oohRate),rate(X.oohRate),true)+
+    row('… with tips',rate(E.oohRateTip),rate(X.oohRateTip))+
+    row('Passenger £/hr',rate(E.engRate),rate(X.engRate))+
+    row('Tip dependency',Math.round(E.tipDep)+'%',Math.round(X.tipDep)+'%')+
+  '</table>';
+}
 async function renderCompare(){
   var el=document.getElementById('review-content'); if(!el)return;
   el.innerHTML='<div class="log-empty">Loading comparison...</div>';
@@ -1576,40 +1611,183 @@ async function renderCompare(){
     var evR=await sbFetch('/rest/v1/events?driver_id=eq.'+DRIVER_ID+'&select=job_id,event_type,timestamp&limit=8000');
     if(!jobsR.ok){el.innerHTML='<div class="log-empty">Could not load comparison</div>';return;}
     var evCount={}; (evR.data||[]).forEach(function(e){evCount[e.job_id]=(evCount[e.job_id]||0)+1;});
-    var ops={EET:{jobs:[],dates:{}},XEC:{jobs:[],dates:{}}};
-    (jobsR.data||[]).forEach(function(j){ if(!evCount[j.job_id])return; var op=operatorOf(j); ops[op].jobs.push(j); if(j.job_date)ops[op].dates[j.job_date]=true; });
-    var allEv=evR.data||[];
-    var data={};
-    ['EET','XEC'].forEach(function(op){ var m=computeDayMetrics(ops[op].jobs,allEv); m.days=Object.keys(ops[op].dates).length; data[op]=m; });
-    var rate=function(x){return x!=null?'£'+x.toFixed(2):'—';};
-    var money=function(x){return '£'+(x||0).toFixed(2);};
-    var E=data.EET,X=data.XEC;
-    function row(lbl,e,x,hi){ return '<tr>'+
-      '<td style="padding:8px 6px;font-size:12px;color:var(--text3);border-bottom:0.5px solid var(--border);">'+lbl+'</td>'+
-      '<td style="padding:8px 6px;font-size:14px;color:var(--text);text-align:right;border-bottom:0.5px solid var(--border);'+(hi?'font-weight:600;':'')+'">'+e+'</td>'+
-      '<td style="padding:8px 6px;font-size:14px;color:var(--gold);text-align:right;border-bottom:0.5px solid var(--border);'+(hi?'font-weight:600;':'')+'">'+x+'</td>'+
-    '</tr>'; }
+    var jobs=(jobsR.data||[]).filter(function(j){return evCount[j.job_id];});
     var html='<div class="section-label" style="padding-bottom:8px;">Company Comparison (your data only)</div>';
-    html+='<div style="background:var(--surface);border:0.5px solid var(--border2);border-radius:12px;padding:8px 10px;margin-bottom:10px;">'+
-      '<table style="width:100%;border-collapse:collapse;">'+
-      '<tr><td style="padding:8px 6px;"></td><td style="padding:8px 6px;font-size:13px;color:var(--text2);text-align:right;font-weight:600;">EET</td><td style="padding:8px 6px;font-size:13px;color:var(--gold);text-align:right;font-weight:600;">XEC</td></tr>'+
-      row('Days worked',E.days,X.days)+
-      row('Jobs',E.jobs,X.jobs)+
-      row('Out-of-home',fmtMins(E.oohMin),fmtMins(X.oohMin))+
-      row('With passenger',fmtMins(E.engMin),fmtMins(X.engMin))+
-      row('Own time (usable)',fmtMins(E.ownMin),fmtMins(X.ownMin))+
-      row('Waiting (dead)',fmtMins(E.waitMin),fmtMins(X.waitMin))+
-      row('Fees',money(E.fees),money(X.fees))+
-      row('Tips',money(E.tips),money(X.tips))+
-      row('Total',money(E.total),money(X.total))+
-      row('Out-of-home £/hr',rate(E.oohRate),rate(X.oohRate),true)+
-      row('… with tips',rate(E.oohRateTip),rate(X.oohRateTip))+
-      row('Passenger £/hr',rate(E.engRate),rate(X.engRate))+
-      row('Tip dependency',Math.round(E.tipDep)+'%',Math.round(X.tipDep)+'%')+
-      '</table></div>';
+    html+='<div style="background:var(--surface);border:0.5px solid var(--border2);border-radius:12px;padding:8px 10px;margin-bottom:10px;">'+companyRollupTable(jobs,evR.data||[])+'</div>';
     html+='<div style="font-size:11px;color:var(--text3);line-height:1.5;">Each company is calculated only from its own jobs — never combined. Use the XEC tab to show XEC their figures.</div>';
     el.innerHTML=html;
   }catch(e){el.innerHTML='<div class="log-empty">Could not load comparison</div>';}
+}
+
+/* ---- ANALYSIS (per-job + per-company + period filter) ---- */
+var ANALYSIS_COMPANY='All', ANALYSIS_PERIOD='all', ANALYSIS_CACHE=null;
+function analysisPeriodStart(p){
+  var now=new Date();
+  if(p==='week'){ var d=new Date(now); var dow=(d.getDay()+6)%7; d.setDate(d.getDate()-dow); d.setHours(0,0,0,0); return d; }
+  if(p==='month'){ return new Date(now.getFullYear(),now.getMonth(),1); }
+  return new Date(0);
+}
+function periodLabel(p){ return p==='week'?'This week':p==='month'?'This month':'All time'; }
+function aPill(active,label,onclick){
+  return '<button onclick="'+onclick+'" style="flex:1;padding:8px 4px;font-size:12px;font-family:inherit;cursor:pointer;border-radius:8px;border:0.5px solid '+(active?'var(--gold)':'var(--border2)')+';background:'+(active?'var(--gold)':'var(--surface)')+';color:'+(active?'#1a1a1a':'var(--text2)')+';'+(active?'font-weight:600;':'')+'">'+label+'</button>';
+}
+function setAnalysisCompany(c){ ANALYSIS_COMPANY=c; var el=document.getElementById('review-content'); if(el)el.innerHTML=buildAnalysisHTML(); }
+function setAnalysisPeriod(p){ ANALYSIS_PERIOD=p; var el=document.getElementById('review-content'); if(el)el.innerHTML=buildAnalysisHTML(); }
+function analysisJobTap(date,op){ if(!date||date==='null')return; setReviewCompany(op); selectReviewDate(date); }
+async function renderAnalysis(){
+  var el=document.getElementById('review-content'); if(!el)return;
+  el.innerHTML='<div class="log-empty">Loading analysis...</div>';
+  try{
+    var jobsR=await sbFetch('/rest/v1/jobs?driver_id=eq.'+DRIVER_ID+'&select=job_id,job_date,job_time,client,pickup,dropoff,earnings,tips&limit=1000');
+    var evR=await sbFetch('/rest/v1/events?driver_id=eq.'+DRIVER_ID+'&select=job_id,event_type,timestamp&limit=10000');
+    if(!jobsR.ok||!evR.ok){el.innerHTML='<div class="log-empty">Could not load analysis</div>';return;}
+    var evCount={}; (evR.data||[]).forEach(function(e){evCount[e.job_id]=(evCount[e.job_id]||0)+1;});
+    ANALYSIS_CACHE={jobs:(jobsR.data||[]).filter(function(j){return evCount[j.job_id];}), events:(evR.data||[])};
+    el.innerHTML=buildAnalysisHTML();
+  }catch(e){el.innerHTML='<div class="log-empty">Could not load analysis</div>';}
+}
+function buildAnalysisHTML(){
+  if(!ANALYSIS_CACHE)return '<div class="log-empty">No data</div>';
+  var C=ANALYSIS_COMPANY, P=ANALYSIS_PERIOD;
+  var ps=analysisPeriodStart(P), pe=new Date(); pe.setHours(23,59,59,999);
+  function inPeriod(j){ var pd=parseJobDate(j.job_date); if(!pd)return P==='all'; return pd>=ps&&pd<=pe; }
+  var periodJobs=ANALYSIS_CACHE.jobs.filter(inPeriod);
+  var scopeJobs=periodJobs.filter(function(j){return C==='All'||operatorOf(j)===C;});
+  var pIds={}; periodJobs.forEach(function(j){pIds[j.job_id]=1;});
+  var sIds={}; scopeJobs.forEach(function(j){sIds[j.job_id]=1;});
+  var periodEvents=ANALYSIS_CACHE.events.filter(function(e){return pIds[e.job_id];});
+  var scopeEvents=ANALYSIS_CACHE.events.filter(function(e){return sIds[e.job_id];});
+  var money=function(x){return '£'+(x||0).toFixed(2);};
+  var rate=function(x){return x!=null?'£'+x.toFixed(2):'—';};
+
+  var h='';
+  h+='<div style="display:flex;gap:6px;margin-bottom:6px;">'+
+    aPill(C==='All','All',"setAnalysisCompany('All')")+
+    aPill(C==='XEC','XEC',"setAnalysisCompany('XEC')")+
+    aPill(C==='EET','EET',"setAnalysisCompany('EET')")+
+  '</div>';
+  h+='<div style="display:flex;gap:6px;margin-bottom:1rem;">'+
+    aPill(P==='week','This week',"setAnalysisPeriod('week')")+
+    aPill(P==='month','This month',"setAnalysisPeriod('month')")+
+    aPill(P==='all','All time',"setAnalysisPeriod('all')")+
+  '</div>';
+
+  if(!scopeJobs.length){
+    h+='<div class="log-empty">No '+(C==='All'?'':C+' ')+'jobs in '+periodLabel(P).toLowerCase()+'</div>';
+    return h;
+  }
+
+  var M=computeDayMetrics(scopeJobs,scopeEvents);
+  var dates={}; scopeJobs.forEach(function(j){if(j.job_date)dates[j.job_date]=true;});
+  var nDays=Object.keys(dates).length;
+  M.perJob=M.jobs>0?M.total/M.jobs:null;
+  M.perDay=nDays>0?M.total/nDays:null;
+  var ownWait=M.ownMin+M.waitMin;
+  var usablePct=ownWait>0?Math.round(M.ownMin/ownWait*100):0;
+
+  h+='<div style="text-align:center;font-size:14px;color:var(--gold);font-weight:600;margin-bottom:2px;">'+(C==='All'?'All companies':C)+' · '+periodLabel(P)+'</div>';
+  h+='<div style="text-align:center;font-size:12px;color:var(--text3);margin-bottom:10px;">'+M.jobs+' job'+(M.jobs!==1?'s':'')+' over '+nDays+' day'+(nDays!==1?'s':'')+'</div>';
+
+  function card(lbl,val,col,sub){return '<div class="stat-card"><div class="stat-label">'+lbl+'</div><div class="stat-value" style="font-size:18px;color:'+(col||'var(--text)')+';">'+val+'</div>'+(sub?'<div style="font-size:11px;color:var(--text3);margin-top:2px;">'+sub+'</div>':'')+'</div>';}
+  h+='<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:8px;">'+
+    card('Earned',money(M.total),'var(--green)',money(M.fees)+' + '+money(M.tips)+' tip')+
+    card('£/job avg',rate(M.perJob))+
+    card('£/day avg',rate(M.perDay))+
+  '</div>';
+  h+='<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:8px;">'+
+    card('Out-of-home £/hr',rate(M.oohRate),null,M.oohRateTip!=null?rate(M.oohRateTip)+' w/tips':'')+
+    card('Passenger £/hr',rate(M.engRate))+
+    card('Tip dependency',M.total>0?Math.round(M.tipDep)+'%':'—')+
+  '</div>';
+  h+='<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-bottom:8px;">'+
+    card('Out of home',fmtMins(M.oohMin),'var(--gold)')+
+    card('Passenger',fmtMins(M.engMin),'var(--green)')+
+    card('Own (usable)',fmtMins(M.ownMin),'var(--green)')+
+    card('Waiting (dead)',fmtMins(M.waitMin),'var(--red)')+
+  '</div>';
+  if(ownWait>0){
+    h+='<div style="font-size:12px;color:var(--text3);text-align:center;margin-bottom:1rem;">Of your between-job time, <span style="color:var(--green);">'+usablePct+'% usable</span> own time · <span style="color:var(--red);">'+(100-usablePct)+'% dead waiting</span></div>';
+  }
+
+  var otherMin=Math.max(0,M.oohMin-M.engMin);
+  var ownM=Math.min(M.ownMin,otherMin), waitM=Math.min(M.waitMin,Math.max(0,otherMin-ownM));
+  var residMin=Math.max(0,otherMin-ownM-waitM);
+  var cats=[
+    {label:'With passenger',minutes:M.engMin,color:'#c9a84c'},
+    {label:'Own time (home / free)',minutes:ownM,color:'#2ecc71'},
+    {label:'Waiting / standby (dead)',minutes:waitM,color:'#c0392b'},
+    {label:'Driving / admin',minutes:residMin,color:'#3a3a3a'}
+  ];
+  if(M.oohMin>0){
+    h+='<div class="section"><div class="section-label">Out-of-Home Time Split</div>'+
+      '<div style="background:var(--surface);border:0.5px solid var(--border2);border-radius:12px;padding:1.25rem 1rem;">'+renderDonut(cats,M.oohMin)+'<div style="margin-top:1rem;">';
+    cats.forEach(function(cat){ if(!cat.minutes)return; var pct=Math.round(cat.minutes/M.oohMin*100);
+      h+='<div style="display:flex;align-items:center;gap:10px;padding:9px 4px;border-bottom:0.5px solid var(--border);"><div style="width:10px;height:10px;border-radius:50%;background:'+cat.color+';flex-shrink:0;"></div><div style="flex:1;font-size:13px;color:var(--text2);">'+cat.label+'</div><div style="font-size:14px;font-weight:500;color:var(--text);">'+fmtMins(cat.minutes)+'</div><div style="font-size:12px;color:var(--text3);width:36px;text-align:right;">'+pct+'%</div></div>';
+    });
+    h+='</div></div></div>';
+  }
+
+  var byDate={}; scopeJobs.forEach(function(j){ if(!j.job_date)return; (byDate[j.job_date]=byDate[j.job_date]||[]).push(j); });
+  var dayRates=[];
+  Object.keys(byDate).forEach(function(d){
+    var dj=byDate[d], dids={}; dj.forEach(function(j){dids[j.job_id]=1;});
+    var dev=scopeEvents.filter(function(e){return dids[e.job_id];});
+    var dm=computeDayMetrics(dj,dev);
+    if(dm.oohRateTip!=null)dayRates.push({date:d,rate:dm.oohRateTip});
+  });
+  if(dayRates.length>1){
+    dayRates.sort(function(a,b){return b.rate-a.rate;});
+    var best=dayRates[0], worst=dayRates[dayRates.length-1];
+    h+='<div class="section"><div class="section-label">Best &amp; worst day (out-of-home £/hr incl tips)</div>'+
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:1rem;">'+
+      card('Best',rate(best.rate),'var(--green)',formatJobDate(best.date))+
+      card('Worst',rate(worst.rate),'var(--red)',formatJobDate(worst.date))+
+    '</div></div>';
+  }
+
+  var sj=scopeJobs.slice().sort(function(a,b){
+    var da=parseJobDate(a.job_date),db=parseJobDate(b.job_date);
+    var ta=da?da.getTime():0, tb=db?db.getTime():0;
+    if(tb!==ta)return tb-ta;
+    return (a.job_time||'')<(b.job_time||'')?-1:1;
+  });
+  h+='<div class="section"><div class="section-label">Per-Job Breakdown ('+sj.length+')</div>';
+  sj.forEach(function(job){
+    var jev=scopeEvents.filter(function(e){return e.job_id===job.job_id;});
+    var jm=computeDayMetrics([job],jev);
+    var fee=parseFloat(job.earnings)||0, tip=parseFloat(job.tips)||0;
+    var perHr=jm.engMin>0?fee/jm.engMin*60:null;
+    var pk=jev.filter(function(e){return e.event_type==='At passenger pickup';}).length;
+    var dr=jev.filter(function(e){return e.event_type==='Passengers dropped off';}).length;
+    var ok=pk>0&&dr>0&&jm.engMin>0;
+    var op=operatorOf(job);
+    h+='<div onclick="analysisJobTap(\''+(job.job_date||'')+'\',\''+op+'\')" style="background:var(--surface);border:0.5px solid '+(ok?'var(--border2)':'var(--gold-dim)')+';border-radius:10px;padding:12px 14px;margin-bottom:6px;cursor:pointer;">'+
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;">'+
+        '<div style="flex:1;min-width:0;">'+
+          '<div style="font-size:15px;color:var(--gold);font-weight:600;">'+job.job_id+'<span style="font-size:11px;color:var(--text3);font-weight:400;"> · '+op+'</span>'+(ok?'':' <span style="font-size:11px;color:var(--gold);">⚠</span>')+'</div>'+
+          '<div style="font-size:11px;color:var(--text3);margin-top:2px;">'+formatJobDate(job.job_date)+(job.job_time?' · '+job.job_time.substring(0,5):'')+'</div>'+
+          '<div style="font-size:11px;color:var(--text3);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+(job.pickup||'')+(job.dropoff?' → '+job.dropoff:'')+'</div>'+
+        '</div>'+
+        '<div style="text-align:right;flex-shrink:0;margin-left:10px;">'+
+          (fee?'<div style="font-size:15px;color:var(--green);font-weight:600;">'+money(fee)+(tip?'<span style="font-size:10px;color:var(--text3);font-weight:400;"> +'+money(tip)+'</span>':'')+'</div>':'<div style="font-size:11px;color:var(--text3);">no fee</div>')+
+          (perHr!=null?'<div style="font-size:11px;color:var(--text3);margin-top:2px;">'+rate(perHr)+'/hr on job</div>':'')+
+        '</div>'+
+      '</div>'+
+      '<div style="display:flex;gap:12px;margin-top:8px;font-size:11px;color:var(--text2);">'+
+        '<span>On job '+(jm.engMin>0?fmtMins(jm.engMin):'—')+'</span>'+
+        (jm.ownMin>0?'<span style="color:var(--green);">Own '+fmtMins(jm.ownMin)+'</span>':'')+
+        (jm.waitMin>0?'<span style="color:var(--red);">Wait '+fmtMins(jm.waitMin)+'</span>':'')+
+      '</div>'+
+    '</div>';
+  });
+  h+='</div>';
+
+  h+='<div class="section"><div class="section-label">Per-Company Rollup · '+periodLabel(P)+'</div>'+
+    '<div style="background:var(--surface);border:0.5px solid var(--border2);border-radius:12px;padding:8px 10px;margin-bottom:8px;">'+companyRollupTable(periodJobs,periodEvents)+'</div>'+
+    '<div style="font-size:11px;color:var(--text3);line-height:1.5;">EET and XEC are never combined. The filters above drive the summary &amp; per-job list; this rollup always shows both companies for the period.</div>';
+  h+='</div>';
+
+  return h;
 }
 
 init();
