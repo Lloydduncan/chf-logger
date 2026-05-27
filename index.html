@@ -847,22 +847,24 @@ function maxTs(arr){return arr.length?Math.max.apply(null,arr.map(evtTs)):null;}
 function getDayQC(){
   var out=[];
   if(DAY_JOBS.length===0)return out;
+  var dayHasEvents=DAY_EVENTS.length>0; // don't nag on days nothing's been logged for yet
   // 1. Singletons — exactly one Start of work day, one End of work day
   var lh=dayEvtsByType('Left house');
   var ah=dayEvtsByType('Arrived home — day complete');
   if(lh.length>1)out.push({lvl:'error',msg:'More than one Start of work day (Left house) — there can be only one.'});
   if(ah.length>1)out.push({lvl:'error',msg:'More than one End of work day — there can be only one.'});
-  if(lh.length===0)out.push({lvl:'warn',msg:'No Start of work day (Left house) logged.'});
-  if(ah.length===0)out.push({lvl:'warn',msg:'No End of work day logged.'});
+  if(dayHasEvents&&lh.length===0)out.push({lvl:'warn',msg:'No Start of work day (Left house) logged.'});
+  if(dayHasEvents&&ah.length===0)out.push({lvl:'warn',msg:'No End of work day logged.'});
   // 2. Per-job completeness + internal order, 3. cross-job overlap, 4. between-job pairing
   var prevDrop=null, prevLabel='';
   DAY_JOBS.forEach(function(job,idx){
     var lbl='Job '+(idx+1)+' ('+job.job_id+')';
+    var jobHasEvents=DAY_EVENTS.some(function(e){return e.job_id===job.job_id;});
     var pk=findDayEvts(job.job_id,'At passenger pickup');
     var ob=findDayEvts(job.job_id,'Passengers onboard');
     var dr=findDayEvts(job.job_id,'Passengers dropped off');
-    if(pk.length===0)out.push({lvl:'warn',msg:lbl+': no pickup logged.'});
-    if(dr.length===0)out.push({lvl:'warn',msg:lbl+': no dropoff logged.'});
+    if(jobHasEvents&&pk.length===0)out.push({lvl:'warn',msg:lbl+': no pickup logged.'});
+    if(jobHasEvents&&dr.length===0)out.push({lvl:'warn',msg:lbl+': no dropoff logged.'});
     var pkT=minTs(pk), obT=minTs(ob), drT=maxTs(dr);
     if(pkT!==null&&drT!==null&&drT<pkT)out.push({lvl:'error',msg:lbl+': dropoff is before pickup — check times.'});
     if(obT!==null&&pkT!==null&&obT<pkT)out.push({lvl:'warn',msg:lbl+': passengers onboard before pickup — check times.'});
@@ -885,6 +887,9 @@ function getDayQC(){
 function renderDayQC(){
   var issues=getDayQC();
   if(issues.length===0){
+    if(!DAY_EVENTS||DAY_EVENTS.length===0){
+      return '<div style="background:var(--surface);border:0.5px solid var(--border2);border-radius:10px;padding:10px 14px;margin-bottom:1rem;font-size:13px;color:var(--text3);">Nothing logged for this day yet</div>';
+    }
     return '<div style="background:#141c14;border:0.5px solid var(--green);border-radius:10px;padding:10px 14px;margin-bottom:1rem;font-size:13px;color:var(--green);">✓ Day looks consistent</div>';
   }
   var hasErr=issues.some(function(i){return i.lvl==='error';});
@@ -1430,41 +1435,6 @@ function setReviewCompany(c){
   else { if(dl)dl.style.display='block'; loadWorkedDays(); if(rc)rc.innerHTML='<div class="log-empty">Select a '+c+' day above to view</div>'; }
 }
 function openReview(){ setReviewCompany(REVIEW_COMPANY); }
-var REVIEW_STATES={
-  'Left house':                {label:'Travel to Car', color:'#2ecc71', billable:false, driving:true},
-  'Arrived at car pickup':     {label:'Vehicle Prep',  color:'#9b59b6', billable:false, driving:false},
-  'Vehicle checks start':      {label:'Vehicle Prep',  color:'#9b59b6', billable:false, driving:false},
-  'Vehicle checks complete':   {label:'Vehicle Prep',  color:'#9b59b6', billable:false, driving:false},
-  'Leaving car pickup':        {label:'Travel to Job', color:'#e67e22', billable:false, driving:true},
-  'At driver holding area':    {label:'Waiting',       color:'#3498db', billable:false, driving:false},
-  'At passenger pickup':       {label:'Waiting',       color:'#3498db', billable:false, driving:false},
-  'Passengers onboard':        {label:'On Job',        color:'#c9a84c', billable:true,  driving:false},
-  'Passengers dropped off':    {label:'Job Wrap',      color:'#b8962e', billable:true,  driving:false},
-  'Job complete':              {label:'Between Jobs',  color:'#555',    billable:false, driving:false},
-  'Waiting period start':      {label:'Waiting',       color:'#3498db', billable:false, driving:false},
-  'Heading to next job':       {label:'Travel to Job', color:'#e67e22', billable:false, driving:true},
-  'Start next job':            {label:'On Job',        color:'#c9a84c', billable:true,  driving:false},
-  'Refuelling vehicle':        {label:'Vehicle Prep',  color:'#9b59b6', billable:false, driving:false},
-  'Cleaning vehicle':          {label:'Vehicle Prep',  color:'#9b59b6', billable:false, driving:false},
-  'Return car to office':      {label:'Return to Base',color:'#27ae60', billable:false, driving:true},
-  'Return home journey start': {label:'Travel Home',   color:'#555',    billable:false, driving:true}
-};
-
-function calcBreakdown(events){
-  var totals={};
-  for(var i=0;i<events.length-1;i++){
-    var ev=events[i],next=events[i+1],state=REVIEW_STATES[ev.event_type];
-    if(!state)continue;
-    var mins=(new Date(next.timestamp)-new Date(ev.timestamp))/60000;
-    if(mins<=0||mins>360)continue;
-    if(!totals[state.label])totals[state.label]={label:state.label,minutes:0,color:state.color,billable:state.billable,driving:state.driving||false};
-    totals[state.label].minutes+=mins;
-  }
-  return Object.values(totals).sort(function(a,b){
-    if(a.billable!==b.billable)return b.billable-a.billable;
-    return b.minutes-a.minutes;
-  });
-}
 
 function fmtMins(m){var h=Math.floor(m/60),min=Math.round(m%60);return h>0?h+'h '+min+'m':min+'m';}
 
@@ -1508,126 +1478,6 @@ function renderDonut(cats,total){
     '<text x="100" y="93" text-anchor="middle" fill="#fff" font-size="24" font-weight="500">'+h+'h '+m+'m</text>'+
     '<text x="100" y="113" text-anchor="middle" fill="#666" font-size="10" letter-spacing="2">DUTY TIME</text>'+
     '</svg>';
-}
-
-async function loadReview(date){
-  if(!DRIVER_ID)return;
-  if(!date)return;
-  var el=document.getElementById('review-content');
-  el.innerHTML='<div class="log-empty">Loading...</div>';
-  try{
-    // Step 1: get all jobs with this job_date
-    var jobsR=await sbFetch('/rest/v1/jobs?driver_id=eq.'+DRIVER_ID+'&job_date=eq.'+encodeURIComponent(date)+'&select=job_id,client,passenger_name,pickup,dropoff,earnings,tips');
-    if(!jobsR.ok||!jobsR.data||!jobsR.data.length){el.innerHTML='<div class="log-empty">No jobs found for this date</div>';return;}
-    var dayJobs=jobsR.data.filter(function(j){return operatorOf(j)===REVIEW_COMPANY;});
-    if(!dayJobs.length){el.innerHTML='<div class="log-empty">No '+REVIEW_COMPANY+' jobs on this date</div>';return;}
-    var jobIds=dayJobs.map(function(j){return j.job_id;});
-    var jobMap={};dayJobs.forEach(function(j){jobMap[j.job_id]=j;});
-
-    // Step 2: get ALL events for those jobs regardless of event timestamp
-    // Handles: midnight crossover, backfilled events with wrong timestamps, multi-day jobs
-    var r=await sbFetch('/rest/v1/events?job_id=in.('+jobIds.join(',')+')'+'&driver_id=eq.'+DRIVER_ID+
-      '&select=event_id,event_type,timestamp,job_id&order=timestamp.asc');
-    if(!r.ok||!r.data||!r.data.length){el.innerHTML='<div class="log-empty">No events logged for this date</div>';return;}
-    var events=r.data;
-    var breakdown=calcBreakdown(events);
-    var total=breakdown.reduce(function(s,c){return s+c.minutes;},0);
-    var paid=breakdown.filter(function(c){return c.billable;}).reduce(function(s,c){return s+c.minutes;},0);
-    var unpaidDriving=breakdown.filter(function(c){return !c.billable&&c.driving;}).reduce(function(s,c){return s+c.minutes;},0);
-    var otherUnpaid=breakdown.filter(function(c){return !c.billable&&!c.driving;}).reduce(function(s,c){return s+c.minutes;},0);
-    var jobIds=[];events.forEach(function(e){if(e.job_id&&jobIds.indexOf(e.job_id)<0)jobIds.push(e.job_id);});
-
-    var totalEarnings=jobsR.data.reduce(function(s,j){return s+(parseFloat(j.earnings)||0);},0);
-    var totalTips=jobsR.data.reduce(function(s,j){return s+(parseFloat(j.tips)||0);},0);
-    // Rate 1: paid time rate
-    var ephPaid=paid>0?(totalEarnings/paid*60):0;
-    // Rate 2: time out of house (Left house → Arrived home — day complete)
-    var evLeftHouse=events.find(function(e){return e.event_type==='Left house';});
-    var evArrivedHome=events.find(function(e){return e.event_type==='Arrived home \u2014 day complete';});
-    var outOfHouseMins=(evLeftHouse&&evArrivedHome)?(new Date(evArrivedHome.timestamp)-new Date(evLeftHouse.timestamp))/60000:null;
-    var ephOOH=(outOfHouseMins&&outOfHouseMins>0)?(totalEarnings/outOfHouseMins*60):null;
-    // Rate 3: time with car (Leaving car pickup → Return car to office)
-    var evLeavingCar=events.find(function(e){return e.event_type==='Leaving car pickup';});
-    var evReturnCar=events.find(function(e){return e.event_type==='Return car to office';});
-    var withCarMins=(evLeavingCar&&evReturnCar)?(new Date(evReturnCar.timestamp)-new Date(evLeavingCar.timestamp))/60000:null;
-    var ephCar=(withCarMins&&withCarMins>0)?(totalEarnings/withCarMins*60):null;
-    var hasIncome=totalEarnings>0;
-
-    var html='';
-    html+='<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:8px;">'+
-      '<div class="stat-card"><div class="stat-label">Paid Time</div><div class="stat-value" style="font-size:18px;color:var(--green)">'+fmtMins(paid)+'</div></div>'+
-      '<div class="stat-card"><div class="stat-label">Unpaid Drive</div><div class="stat-value" style="font-size:18px;color:var(--gold)">'+fmtMins(unpaidDriving)+'</div></div>'+
-      '<div class="stat-card"><div class="stat-label">Other Unpaid</div><div class="stat-value" style="font-size:18px;color:var(--text3)">'+fmtMins(otherUnpaid)+'</div></div>'+
-      '</div>';
-    if(hasIncome){
-      var rateCard=function(label,mins,rate,rateWithTips,sub){
-        var val=rate?'\u00a3'+rate.toFixed(2):'\u2014';
-        var tipLine=(rateWithTips&&totalTips)?'<div style="font-size:11px;color:var(--text3);margin-top:1px;">\u00a3'+rateWithTips.toFixed(2)+' with tips</div>':'';
-        var subTxt=mins?'<div style="font-size:10px;color:var(--text3);margin-top:2px;">'+fmtMins(Math.round(mins))+(sub?' '+sub:'')+'</div>':'';
-        return '<div class="stat-card"><div class="stat-label">'+label+'</div><div class="stat-value" style="font-size:18px;color:var(--text);">'+val+'</div>'+tipLine+subTxt+'</div>';
-      };
-      html+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">'+
-        '<div class="stat-card"><div class="stat-label">Day Earnings</div><div class="stat-value" style="font-size:18px;color:var(--green);">\u00a3'+totalEarnings.toFixed(2)+'</div>'+(totalTips?'<div style="font-size:11px;color:var(--text3);margin-top:2px;">+ \u00a3'+totalTips.toFixed(2)+' tips</div>':'')+'</div>'+
-        rateCard('Paid Rate',paid,ephPaid,paid>0?(totalEarnings+totalTips)/paid*60:null,'paid')+
-        '</div>';
-      html+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:1rem;">'+
-        rateCard('Out of House',outOfHouseMins,ephOOH,(outOfHouseMins&&outOfHouseMins>0)?(totalEarnings+totalTips)/outOfHouseMins*60:null,'out')+
-        rateCard('With Car',withCarMins,ephCar,(withCarMins&&withCarMins>0)?(totalEarnings+totalTips)/withCarMins*60:null,'on car')+
-        '</div>';
-    }else{
-      html+='<div style="margin-bottom:1rem;"></div>';
-    }
-
-    html+='<div class="section"><div class="section-label">Time Breakdown</div>'+
-      '<div style="background:var(--surface);border:0.5px solid var(--border2);border-radius:12px;padding:1.25rem 1rem;">';
-    html+='<div style="text-align:center;font-size:13px;color:var(--gold);font-weight:500;margin-bottom:8px;">'+formatJobDate(date)+'</div>';
-    html+=renderDonut(breakdown,total);
-    html+='<div style="margin-top:1rem;">';
-    breakdown.forEach(function(cat){
-      var pct=total?Math.round(cat.minutes/total*100):0;
-      html+='<div style="display:flex;align-items:center;gap:10px;padding:9px 4px;border-bottom:0.5px solid var(--border);">'+
-        '<div style="width:10px;height:10px;border-radius:50%;background:'+cat.color+';flex-shrink:0;"></div>'+
-        '<div style="flex:1;font-size:13px;color:var(--text2);">'+cat.label+'</div>'+
-        '<div style="font-size:14px;font-weight:500;color:var(--text);">'+fmtMins(cat.minutes)+'</div>'+
-        '<div style="font-size:12px;color:var(--text3);width:36px;text-align:right;">'+pct+'%</div>'+
-        '</div>';
-    });
-    html+='</div></div></div>';
-
-    if(jobIds.length){
-      html+='<div class="section"><div class="section-label">Jobs This Day</div>';
-      jobIds.forEach(function(jobId){
-        var job=jobMap[jobId]||{};
-        var jevs=events.filter(function(e){return e.job_id===jobId;});
-        var ob=jevs.find(function(e){return e.event_type==='Passengers onboard';});
-        var dr=jevs.find(function(e){return e.event_type==='Passengers dropped off';});
-        var onMins=(ob&&dr)?(new Date(dr.timestamp)-new Date(ob.timestamp))/60000:null;
-        var jobEarnings=parseFloat(job.earnings)||0;
-        var jobTips=parseFloat(job.tips)||0;
-        html+='<div id="rc-'+jobId+'" style="background:var(--surface);border:0.5px solid var(--border2);border-radius:10px;padding:13px 14px;margin-bottom:6px;">'+
-          '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px;">'+
-            '<div style="flex:1;min-width:0;">'+
-              '<div style="font-size:22px;color:var(--gold);font-weight:600;letter-spacing:0.5px;">'+jobId+'</div>'+
-              '<div style="font-size:13px;font-weight:500;color:var(--text);margin-top:2px;">'+(job.client||'')+(job.passenger_name?' · '+job.passenger_name:'')+'</div>'+
-              ((job.pickup||job.dropoff)?'<div style="font-size:12px;color:var(--text3);margin-top:3px;">'+(job.pickup||'')+(job.dropoff?' \u2192 '+job.dropoff:'')+'</div>':'')+
-            '</div>'+
-            '<div style="text-align:right;flex-shrink:0;margin-left:10px;">'+
-              (onMins!==null?'<div style="font-size:13px;color:var(--text);font-weight:500;">On job \u00b7 '+fmtMins(onMins)+'</div>':
-              '<div style="font-size:11px;color:var(--text3);">No on-job times yet</div>')+
-              (jobEarnings?'<div style="font-size:15px;color:var(--green);font-weight:600;margin-top:3px;">\u00a3'+jobEarnings.toFixed(2)+(jobTips?'<span style="font-size:11px;font-weight:400;color:var(--text3);"> +\u00a3'+jobTips.toFixed(2)+' tip</span>':'')+'</div>':'<div style="font-size:11px;color:var(--text3);margin-top:3px;">No earnings</div>')+
-            '</div>'+
-          '</div>'+
-          '<div style="font-size:12px;color:var(--text3);">'+jevs.length+' events'+
-            (jevs.length?'  \u00b7  '+fmtTime(jevs[0].timestamp)+' \u2192 '+fmtTime(jevs[jevs.length-1].timestamp):'')+
-            (jobTips?'  \u00b7  <span style="color:var(--green);">tip \u00a3'+jobTips.toFixed(2)+'</span>':'')+
-          '</div>'+
-          '</div>';
-      });
-      html+='</div>';
-    }
-
-    el.innerHTML=html;
-  }catch(e){el.innerHTML='<div class="log-empty">Could not load review</div>';}
 }
 
 async function loadReviewV2(date){
