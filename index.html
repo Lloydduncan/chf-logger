@@ -382,7 +382,8 @@ var DRIVER_ID=null, ACTIVE_JOB=null, ALL_JOBS=[], SESSION_EVENTS={}, expandedJob
 /* ---- SEQUENCE DEFINITION ---- */
 var EVENT_SEQ=[
   'Left house','At driver holding area','At passenger pickup',
-  'Passengers onboard','Passengers dropped off',
+  'Passengers onboard','Passengers dropped off','Job complete',
+  'Own time start','Own time end','Waiting period start','Waiting period end',
   'Return home journey start','Arrived home — day complete'
 ];
 function getSequenceViolations(editedEventId,newIso){
@@ -419,6 +420,16 @@ var VEHICLE_EVENTS=[
 ];
 var END_DAY_EVENTS=[
   {key:'Return home journey start',icon:'🚗'},{key:'Arrived home — day complete',icon:'🌙'}
+];
+// End-of-job marker (per job). Reuses the legacy 'Job complete' event_type so older logged data still matches.
+var END_JOB_EVENT={key:'Job complete',label:'End of current job',icon:'✅'};
+// Between-jobs time — ALL unpaid (jobs are set-fee, so earning stops at dropoff).
+// Split only by QUALITY of the time: own time = usable (home/free); waiting = dead standby.
+var BETWEEN_JOB_EVENTS=[
+  {key:'Own time start',label:'Own time — start (home / free)',icon:'🏠'},
+  {key:'Own time end',label:'Own time — end',icon:'🏡'},
+  {key:'Waiting period start',label:'Waiting / standby — start',icon:'⌛'},
+  {key:'Waiting period end',label:'Waiting / standby — end',icon:'⏱️'}
 ];
 
 var MONTH_MAP={Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11};
@@ -729,7 +740,7 @@ function renderDayEvtRow(ev,jobId){
   if(isEditing){
     return '<div class="day-evt-row editing">'+
       '<span class="day-evt-icon">'+ev.icon+'</span>'+
-      '<span class="day-evt-name">'+ev.key+'</span>'+
+      '<span class="day-evt-name">'+(ev.label||ev.key)+'</span>'+
     '</div>'+
     '<div class="day-evt-edit-row">'+
       '<input class="inline-time" id="'+safeId+'" type="time" value="'+defaultTime+'" style="flex:1;" onkeydown="if(event.key===\'Enter\')saveDayLog()">'+
@@ -739,7 +750,7 @@ function renderDayEvtRow(ev,jobId){
   }
   return '<div class="day-evt-row" data-jid="'+encodeURIComponent(jobId)+'" data-key="'+encodeURIComponent(ev.key)+'" onclick="dayRowClick(this)">'+
     '<span class="day-evt-icon">'+ev.icon+'</span>'+
-    '<span class="day-evt-name">'+ev.key+'</span>'+
+    '<span class="day-evt-name">'+(ev.label||ev.key)+'</span>'+
     (loggedHtml?loggedHtml:'<span style="font-size:12px;color:var(--text3);">tap to log</span>')+
   '</div>';
 }
@@ -828,6 +839,65 @@ async function saveTipLog(){
     setStatus('logger-status','error','Could not save tip',3000);
   }
 }
+/* ---- WHOLE-DAY LOGIC CHECK ---- */
+function dayEvtsByType(type){return DAY_EVENTS.filter(function(e){return e.event_type===type;});}
+function evtTs(e){return new Date(e.timestamp).getTime();}
+function minTs(arr){return arr.length?Math.min.apply(null,arr.map(evtTs)):null;}
+function maxTs(arr){return arr.length?Math.max.apply(null,arr.map(evtTs)):null;}
+function getDayQC(){
+  var out=[];
+  if(DAY_JOBS.length===0)return out;
+  // 1. Singletons — exactly one Start of work day, one End of work day
+  var lh=dayEvtsByType('Left house');
+  var ah=dayEvtsByType('Arrived home — day complete');
+  if(lh.length>1)out.push({lvl:'error',msg:'More than one Start of work day (Left house) — there can be only one.'});
+  if(ah.length>1)out.push({lvl:'error',msg:'More than one End of work day — there can be only one.'});
+  if(lh.length===0)out.push({lvl:'warn',msg:'No Start of work day (Left house) logged.'});
+  if(ah.length===0)out.push({lvl:'warn',msg:'No End of work day logged.'});
+  // 2. Per-job completeness + internal order, 3. cross-job overlap, 4. between-job pairing
+  var prevDrop=null, prevLabel='';
+  DAY_JOBS.forEach(function(job,idx){
+    var lbl='Job '+(idx+1)+' ('+job.job_id+')';
+    var pk=findDayEvts(job.job_id,'At passenger pickup');
+    var ob=findDayEvts(job.job_id,'Passengers onboard');
+    var dr=findDayEvts(job.job_id,'Passengers dropped off');
+    if(pk.length===0)out.push({lvl:'warn',msg:lbl+': no pickup logged.'});
+    if(dr.length===0)out.push({lvl:'warn',msg:lbl+': no dropoff logged.'});
+    var pkT=minTs(pk), obT=minTs(ob), drT=maxTs(dr);
+    if(pkT!==null&&drT!==null&&drT<pkT)out.push({lvl:'error',msg:lbl+': dropoff is before pickup — check times.'});
+    if(obT!==null&&pkT!==null&&obT<pkT)out.push({lvl:'warn',msg:lbl+': passengers onboard before pickup — check times.'});
+    if(obT!==null&&drT!==null&&obT>drT)out.push({lvl:'warn',msg:lbl+': passengers onboard after dropoff — check times.'});
+    if(prevDrop!==null&&pkT!==null&&pkT<prevDrop)out.push({lvl:'error',msg:lbl+' starts before '+prevLabel+' finished — jobs overlap.'});
+    if(drT!==null){prevDrop=drT;prevLabel=lbl;}
+    [['Own time start','Own time end','Own time'],['Waiting period start','Waiting period end','Waiting period']].forEach(function(p){
+      var s=findDayEvts(job.job_id,p[0]), e=findDayEvts(job.job_id,p[1]);
+      if(s.length!==e.length)out.push({lvl:'warn',msg:lbl+': '+p[2]+' has a start without an end (or vice versa).'});
+      if(s.length&&e.length&&maxTs(e)<minTs(s))out.push({lvl:'warn',msg:lbl+': '+p[2]+' ends before it starts — check times.'});
+    });
+  });
+  // 5. Day-boundary order
+  var lhT=minTs(lh), ahT=maxTs(ah);
+  var firstPk=minTs(findDayEvts(DAY_JOBS[0].job_id,'At passenger pickup'));
+  if(lhT!==null&&firstPk!==null&&lhT>firstPk)out.push({lvl:'warn',msg:'Start of work day is after the first pickup — check times.'});
+  if(ahT!==null&&prevDrop!==null&&ahT<prevDrop)out.push({lvl:'error',msg:'End of work day is before the last dropoff — check times.'});
+  return out;
+}
+function renderDayQC(){
+  var issues=getDayQC();
+  if(issues.length===0){
+    return '<div style="background:#141c14;border:0.5px solid var(--green);border-radius:10px;padding:10px 14px;margin-bottom:1rem;font-size:13px;color:var(--green);">✓ Day looks consistent</div>';
+  }
+  var hasErr=issues.some(function(i){return i.lvl==='error';});
+  var col=hasErr?'var(--red)':'var(--gold)';
+  var h='<div style="background:var(--surface);border:0.5px solid '+col+';border-radius:10px;padding:10px 14px;margin-bottom:1rem;">'+
+    '<div style="font-size:11px;letter-spacing:1px;text-transform:uppercase;color:'+col+';margin-bottom:6px;">Day check — '+issues.length+' to review</div>';
+  issues.forEach(function(i){
+    var c=i.lvl==='error'?'var(--red)':'var(--gold)';
+    h+='<div style="font-size:13px;color:var(--text2);margin:3px 0;display:flex;gap:6px;"><span style="color:'+c+';flex-shrink:0;">'+(i.lvl==='error'?'✕':'⚠')+'</span><span>'+i.msg+'</span></div>';
+  });
+  h+='</div>';
+  return h;
+}
 function renderDayView(){
   var content=document.getElementById('logger-content');
   if(!content)return;
@@ -859,6 +929,9 @@ function renderDayView(){
 
   var firstJobId=DAY_JOBS[0].job_id;
 
+  // ── Day consistency check ───────────────────────────────────────────────────
+  h+=renderDayQC();
+
   // ── Start of Day ────────────────────────────────────────────────────────────
   var sodLogged=DAY_START_EVENTS.filter(function(ev){return findDayEvts(firstJobId,ev.key).length>0;}).length;
   var sodClass=sodLogged===DAY_START_EVENTS.length?' evented':sodLogged>0?' partial':'';
@@ -879,30 +952,33 @@ function renderDayView(){
 
     h+='<div class="day-block'+jobClass+'">'+
       '<div class="day-block-hdr">'+
-        '<div class="day-block-title">'+job.job_id+' — '+(job.client||'')+'</div>'+
+        '<div class="day-block-title">'+(idx>0?'▶ Start of next job · ':'')+job.job_id+' — '+(job.client||'')+'</div>'+
         '<div style="font-size:11px;color:var(--gold);margin-right:6px;">'+(job.job_date||'')+(job.job_time?' '+job.job_time:'')+'</div>'+
         '<div class="day-status-dot'+jobClass+'"></div>'+
       '</div>';
     h+='<div class="day-job-label">'+(job.pickup||'')+(job.dropoff?' &#x2192; '+job.dropoff:'')+'</div>';
 
-    // On-job events (skip Heading to next job on last job)
-    ON_JOB_EVENTS.forEach(function(ev){
-      if(ev.key==='Heading to next job'&&isLast)return;
-      h+=renderDayEvtRow(ev,job.job_id);
-    });
+    // On-job events, then the explicit end-of-job marker
+    ON_JOB_EVENTS.forEach(function(ev){h+=renderDayEvtRow(ev,job.job_id);});
+    h+=renderDayEvtRow(END_JOB_EVENT,job.job_id);
     h+=renderTipRow(job.job_id);
     h+='</div>';
 
-    // Vehicle / admin events between jobs (or after last job) — attributed to this job
-    var vehEvents=[
-      {key:'Refuelling vehicle',icon:'&#x26FD;'},
-      {key:'Cleaning vehicle',icon:'&#x1F9F9;'}
-    ];
-    // Only show vehicle block if at least one has been logged, OR it's a logging context (always show for input)
-    h+='<div class="day-block" style="border-style:dashed;opacity:0.85;">'+
-      '<div class="day-block-hdr"><div class="day-block-title" style="font-size:10px;">Vehicle / Admin'+(isLast?'':' (after job '+(idx+1)+')')+'</div></div>';
-    vehEvents.forEach(function(ev){h+=renderDayEvtRow(ev,job.job_id);});
-    h+='</div>';
+    if(!isLast){
+      // Between this job and the next — ALL unpaid. Tag the quality: own time vs dead waiting.
+      // Attributed to this (the preceding) job.
+      h+='<div class="day-block" style="border-style:dashed;opacity:0.9;">'+
+        '<div class="day-block-hdr"><div class="day-block-title" style="font-size:10px;">Between job '+(idx+1)+' and job '+(idx+2)+' — unpaid time</div></div>';
+      BETWEEN_JOB_EVENTS.forEach(function(ev){h+=renderDayEvtRow(ev,job.job_id);});
+      VEHICLE_EVENTS.forEach(function(ev){h+=renderDayEvtRow(ev,job.job_id);});
+      h+='</div>';
+    } else {
+      // After the last job — vehicle / admin only (then End of Day)
+      h+='<div class="day-block" style="border-style:dashed;opacity:0.85;">'+
+        '<div class="day-block-hdr"><div class="day-block-title" style="font-size:10px;">Vehicle / Admin</div></div>';
+      VEHICLE_EVENTS.forEach(function(ev){h+=renderDayEvtRow(ev,job.job_id);});
+      h+='</div>';
+    }
   });
 
   // (Car Return step removed — XEC vehicle kept at home, no car collection/return)
@@ -1081,7 +1157,9 @@ function openAddEventModal(jobId){
   var ALL_EVENT_GROUPS=[
     {label:'Start of Day',events:DAY_START_EVENTS},
     {label:'On Job',events:ON_JOB_EVENTS},
-    {label:'Vehicle',events:VEHICLE_EVENTS},
+    {label:'End of Job',events:[END_JOB_EVENT]},
+    {label:'Between Jobs (unpaid)',events:BETWEEN_JOB_EVENTS},
+    {label:'Vehicle / Admin',events:VEHICLE_EVENTS},
     {label:'End of Day',events:END_DAY_EVENTS}
   ];
   ALL_EVENT_GROUPS.forEach(function(g){
@@ -1089,7 +1167,7 @@ function openAddEventModal(jobId){
     opt.disabled=true; opt.textContent='— '+g.label+' —'; sel.appendChild(opt);
     g.events.forEach(function(ev){
       var o=document.createElement('option');
-      o.value=ev.key; o.textContent=ev.key; sel.appendChild(o);
+      o.value=ev.key; o.textContent=ev.label||ev.key; sel.appendChild(o);
     });
   });
   // Default date to job date if available, else today
@@ -1313,7 +1391,15 @@ var REVIEW_COMPANY='XEC';
 function operatorOf(job){ return ((job&&job.client||'').toLowerCase().indexOf('xec')>=0)?'XEC':'EET'; }
 function computeDayMetrics(jobs,events){
   var byJob={}; events.forEach(function(e){ if(!byJob[e.job_id])byJob[e.job_id]=[]; byJob[e.job_id].push(e); });
-  var m={oohMin:0,engMin:0,pobMin:0,fees:0,tips:0,jobs:jobs.length};
+  var m={oohMin:0,engMin:0,pobMin:0,ownMin:0,waitMin:0,fees:0,tips:0,jobs:jobs.length};
+  // Sum paired start/end durations within a job (sort each side, pair by index)
+  function pairedMins(es,st,en){
+    var s=es.filter(function(e){return e.event_type===st;}).map(function(e){return +new Date(e.timestamp);}).sort(function(a,b){return a-b;});
+    var f=es.filter(function(e){return e.event_type===en;}).map(function(e){return +new Date(e.timestamp);}).sort(function(a,b){return a-b;});
+    var n=Math.min(s.length,f.length),mn=0;
+    for(var i=0;i<n;i++){var d=(f[i]-s[i])/60000;if(d>0)mn+=d;}
+    return mn;
+  }
   jobs.forEach(function(j){
     var es=byJob[j.job_id]||[];
     var lh=es.filter(function(e){return e.event_type==='Left house';}).map(function(e){return +new Date(e.timestamp);});
@@ -1324,6 +1410,8 @@ function computeDayMetrics(jobs,events){
     var dr=es.filter(function(e){return e.event_type==='Passengers dropped off';})[0];
     if(pu&&dr){ var d2=(+new Date(dr.timestamp)-+new Date(pu.timestamp))/60000; if(d2>0)m.engMin+=d2; }
     if(ob&&dr){ var d3=(+new Date(dr.timestamp)-+new Date(ob.timestamp))/60000; if(d3>0)m.pobMin+=d3; }
+    m.ownMin+=pairedMins(es,'Own time start','Own time end');
+    m.waitMin+=pairedMins(es,'Waiting period start','Waiting period end');
     m.fees+=parseFloat(j.earnings)||0; m.tips+=parseFloat(j.tips)||0;
   });
   m.total=m.fees+m.tips;
@@ -1575,13 +1663,26 @@ async function loadReviewV2(date){
         '<div class="stat-card"><div class="stat-label">Jobs</div><div class="stat-value" style="font-size:18px;color:var(--text);">'+M.jobs+'</div></div>'+
         '</div>';
     }else{ html+='<div style="margin-bottom:1rem;"></div>'; }
+    if(M.ownMin>0||M.waitMin>0){
+      html+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:1rem;">'+
+        '<div class="stat-card"><div class="stat-label">Own Time (usable)</div><div class="stat-value" style="font-size:18px;color:var(--green);">'+fmtMins(M.ownMin)+'</div><div style="font-size:11px;color:var(--text3);margin-top:2px;">home / free</div></div>'+
+        '<div class="stat-card"><div class="stat-label">Waiting (dead)</div><div class="stat-value" style="font-size:18px;color:var(--red);">'+fmtMins(M.waitMin)+'</div><div style="font-size:11px;color:var(--text3);margin-top:2px;">stuck / standby</div></div>'+
+        '</div>';
+    }
     var otherMin=Math.max(0,M.oohMin-M.engMin);
-    var cats=[{label:'With passenger',minutes:M.engMin,color:'#c9a84c'},{label:'Driving / waiting / admin',minutes:otherMin,color:'#3a3a3a'}];
+    var ownMin=Math.min(M.ownMin,otherMin), waitMin=Math.min(M.waitMin,Math.max(0,otherMin-ownMin));
+    var residMin=Math.max(0,otherMin-ownMin-waitMin);
+    var cats=[
+      {label:'With passenger',minutes:M.engMin,color:'#c9a84c'},
+      {label:'Own time (home / free)',minutes:ownMin,color:'#2ecc71'},
+      {label:'Waiting / standby (dead)',minutes:waitMin,color:'#c0392b'},
+      {label:'Driving / admin',minutes:residMin,color:'#3a3a3a'}
+    ];
     html+='<div class="section"><div class="section-label">Out-of-Home Time Split</div>'+
       '<div style="background:var(--surface);border:0.5px solid var(--border2);border-radius:12px;padding:1.25rem 1rem;">';
     html+=renderDonut(cats,M.oohMin);
     html+='<div style="margin-top:1rem;">';
-    cats.forEach(function(cat){ var pct=M.oohMin?Math.round(cat.minutes/M.oohMin*100):0;
+    cats.forEach(function(cat){ if(!cat.minutes)return; var pct=M.oohMin?Math.round(cat.minutes/M.oohMin*100):0;
       html+='<div style="display:flex;align-items:center;gap:10px;padding:9px 4px;border-bottom:0.5px solid var(--border);">'+
         '<div style="width:10px;height:10px;border-radius:50%;background:'+cat.color+';flex-shrink:0;"></div>'+
         '<div style="flex:1;font-size:13px;color:var(--text2);">'+cat.label+'</div>'+
@@ -1646,6 +1747,8 @@ async function renderCompare(){
       row('Jobs',E.jobs,X.jobs)+
       row('Out-of-home',fmtMins(E.oohMin),fmtMins(X.oohMin))+
       row('With passenger',fmtMins(E.engMin),fmtMins(X.engMin))+
+      row('Own time (usable)',fmtMins(E.ownMin),fmtMins(X.ownMin))+
+      row('Waiting (dead)',fmtMins(E.waitMin),fmtMins(X.waitMin))+
       row('Fees',money(E.fees),money(X.fees))+
       row('Tips',money(E.tips),money(X.tips))+
       row('Total',money(E.total),money(X.total))+
