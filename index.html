@@ -1583,7 +1583,7 @@ async function loadReviewV2(date){
           '</div>'+
           '<div style="text-align:right;flex-shrink:0;margin-left:10px;">'+
             (onMins!=null?'<div style="font-size:13px;color:var(--text);font-weight:500;">On job · '+fmtMins(onMins)+'</div>':'<div style="font-size:11px;color:var(--text3);">No on-job times</div>')+
-            (je?'<div style="font-size:15px;color:var(--green);font-weight:600;margin-top:3px;">£'+je.toFixed(2)+(jt?'<span style="font-size:11px;font-weight:400;color:var(--text3);"> +£'+jt.toFixed(2)+' tip</span>':'')+'</div>':'')+
+            ((je||jt)?'<div style="font-size:15px;color:var(--green);font-weight:600;margin-top:3px;">'+(je?'£'+je.toFixed(2):'<span style="color:var(--text3);">no fee</span>')+(jt?'<span style="font-size:11px;font-weight:400;color:var(--text3);"> +£'+jt.toFixed(2)+' tip</span>':'')+'</div>':'')+
           '</div>'+
         '</div>'+
         '<div style="font-size:12px;color:var(--text3);margin-top:6px;">'+jevs.length+' events'+(jevs.length?'  ·  '+fmtTime(jevs[0].timestamp)+' → '+fmtTime(jevs[jevs.length-1].timestamp):'')+'</div>'+
@@ -1769,6 +1769,29 @@ function buildAnalysisHTML(){
     '</div></div>';
   }
 
+  // ---- Tips breakdown (per tipped job) ----
+  var tipped=scopeJobs.filter(function(j){return (parseFloat(j.tips)||0)>0;})
+    .sort(function(a,b){return (parseFloat(b.tips)||0)-(parseFloat(a.tips)||0);});
+  if(tipped.length){
+    h+='<div class="section"><div class="section-label">Tips Breakdown · '+money(M.tips)+' total</div>';
+    tipped.forEach(function(j){
+      var t=parseFloat(j.tips)||0, f=parseFloat(j.earnings)||0;
+      var pctOfTips=M.tips>0?Math.round(t/M.tips*100):0;
+      h+='<div style="display:flex;justify-content:space-between;align-items:center;background:var(--surface);border:0.5px solid var(--border2);border-radius:10px;padding:10px 14px;margin-bottom:6px;">'+
+        '<div style="min-width:0;flex:1;">'+
+          '<div style="font-size:14px;color:var(--gold);font-weight:600;">'+j.job_id+'<span style="font-size:11px;color:var(--text3);font-weight:400;"> · '+operatorOf(j)+'</span></div>'+
+          '<div style="font-size:11px;color:var(--text3);margin-top:2px;">'+formatJobDate(j.job_date)+(f?' · on '+money(f)+' fee':'')+'</div>'+
+        '</div>'+
+        '<div style="text-align:right;flex-shrink:0;margin-left:10px;">'+
+          '<div style="font-size:15px;color:var(--green);font-weight:600;">'+money(t)+'</div>'+
+          '<div style="font-size:11px;color:var(--text3);">'+pctOfTips+'% of tips</div>'+
+        '</div>'+
+      '</div>';
+    });
+    h+='<div style="font-size:11px;color:var(--text3);line-height:1.5;margin-top:2px;">Tips are '+(M.total>0?Math.round(M.tipDep):0)+'% of total earned ('+money(M.tips)+' of '+money(M.total)+') · '+tipped.length+' of '+M.jobs+' job'+(M.jobs!==1?'s':'')+' tipped.</div>';
+    h+='</div>';
+  }
+
   var sj=scopeJobs.slice().sort(function(a,b){
     var da=parseJobDate(a.job_date),db=parseJobDate(b.job_date);
     var ta=da?da.getTime():0, tb=db?db.getTime():0;
@@ -1793,7 +1816,7 @@ function buildAnalysisHTML(){
           '<div style="font-size:11px;color:var(--text3);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+(job.pickup||'')+(job.dropoff?' → '+job.dropoff:'')+'</div>'+
         '</div>'+
         '<div style="text-align:right;flex-shrink:0;margin-left:10px;">'+
-          (fee?'<div style="font-size:15px;color:var(--green);font-weight:600;">'+money(fee)+(tip?'<span style="font-size:10px;color:var(--text3);font-weight:400;"> +'+money(tip)+'</span>':'')+'</div>':'<div style="font-size:11px;color:var(--text3);">no fee</div>')+
+          ((fee||tip)?'<div style="font-size:15px;color:var(--green);font-weight:600;">'+(fee?money(fee):'<span style="color:var(--text3);">no fee</span>')+(tip?'<span style="font-size:10px;color:var(--text3);font-weight:400;"> +'+money(tip)+' tip</span>':'')+'</div>':'<div style="font-size:11px;color:var(--text3);">no fee/tip</div>')+
           (perHr!=null?'<div style="font-size:11px;color:var(--text3);margin-top:2px;">'+rate(perHr)+'/hr on job</div>':'')+
         '</div>'+
       '</div>'+
