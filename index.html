@@ -1413,6 +1413,25 @@ function operatorOf(job){ return ((job&&job.client||'').toLowerCase().indexOf('x
    excluded from ALL earnings/rates and hidden everywhere. localStorage chf_show_tips. ---- */
 function tipsOn(){ return localStorage.getItem('chf_show_tips')!=='0'; }
 function toggleTips(){ localStorage.setItem('chf_show_tips', tipsOn()?'0':'1'); var el=document.getElementById('review-content'); if(el&&ANALYSIS_CACHE)el.innerHTML=buildAnalysisHTML(); }
+
+/* ---- EXPENSES (localStorage; migrate to a Supabase table for multi-device later) ---- */
+var EXPENSE_CATEGORIES=['Fuel','Car wash & valeting','Repairs & maintenance','Insurance','Vehicle finance / lease','Tolls & parking','Phone & data','Licensing & memberships','Accountancy & professional','Other'];
+function getExpenses(){ try{return JSON.parse(localStorage.getItem('chf_expenses')||'[]');}catch(e){return [];} }
+function saveExpenses(a){ localStorage.setItem('chf_expenses',JSON.stringify(a)); }
+function addExpense(date,category,amount,note){ var a=getExpenses(); a.push({id:'e'+Date.now()+'_'+Math.floor(Math.random()*1000),date:date,category:category,amount:amount,note:note||''}); saveExpenses(a); }
+function deleteExpense(id){ saveExpenses(getExpenses().filter(function(e){return e.id!==id;})); }
+function expensesInPeriod(){
+  var ps=analysisPeriodStart(ANALYSIS_PERIOD), pe=new Date(); pe.setHours(23,59,59,999);
+  return getExpenses().filter(function(e){ if(ANALYSIS_PERIOD==='all')return true; var d=new Date(e.date+'T12:00:00'); return !isNaN(+d)&&d>=ps&&d<=pe; })
+    .sort(function(a,b){ return (a.date<b.date?1:a.date>b.date?-1:0); });
+}
+function addExpenseFromForm(){
+  var d=(document.getElementById('exp-date')||{}).value, c=(document.getElementById('exp-cat')||{}).value, amt=parseFloat((document.getElementById('exp-amt')||{}).value), n=(document.getElementById('exp-note')||{}).value;
+  if(!d||!(amt>0)){ alert('Enter a date and a positive amount.'); return; }
+  addExpense(d,c,amt,n);
+  var el=document.getElementById('review-content'); if(el)el.innerHTML=buildAnalysisHTML();
+}
+function deleteExpenseUI(id){ if(confirm('Delete this expense?')){ deleteExpense(id); var el=document.getElementById('review-content'); if(el)el.innerHTML=buildAnalysisHTML(); } }
 function computeDayMetrics(jobs,events){
   var byJob={}; events.forEach(function(e){ if(!byJob[e.job_id])byJob[e.job_id]=[]; byJob[e.job_id].push(e); });
   var m={oohMin:0,engMin:0,pobMin:0,ownMin:0,waitMin:0,fees:0,tips:0,jobs:jobs.length};
@@ -1770,6 +1789,28 @@ function buildAnalysisHTML(){
         card('Smallest tip',money(smallest||0))+
         card('Tip vs fee',tipVsFee!=null?tipVsFee+'%':'—',null,'tips ÷ fees')+
       '</div>';
+      var tipsPerOoh=M.oohMin>0?totalTips/(M.oohMin/60):null;
+      var tipsPerEng=M.engMin>0?totalTips/(M.engMin/60):null;
+      h+='<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:8px;">'+
+        card('Tips £/hr',rate(tipsPerOoh),'var(--green)','out-of-home')+
+        card('Tips £/hr',rate(tipsPerEng),'var(--green)','with passenger')+
+        card('Tip dependency',M.total>0?Math.round(M.tipDep)+'%':'—')+
+      '</div>';
+      // Tips trend by month
+      var byMonth={}; tippedJobs.forEach(function(j){ var k=isoKey(j.job_date).slice(0,7); byMonth[k]=(byMonth[k]||0)+(parseFloat(j.tips)||0); });
+      var months=Object.keys(byMonth).sort();
+      if(months.length>1){
+        var maxM=Math.max.apply(null,months.map(function(m){return byMonth[m];}));
+        h+='<div class="section-label" style="padding-top:4px;">Trend by month</div>';
+        months.forEach(function(m){
+          var v=byMonth[m], w=maxM>0?Math.round(v/maxM*100):0, p=m.split('-'), lbl=SHORT_MONTHS[parseInt(p[1],10)-1]+' '+p[0];
+          h+='<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;font-size:12px;">'+
+            '<span style="width:68px;color:var(--text3);flex-shrink:0;">'+lbl+'</span>'+
+            '<div style="flex:1;background:var(--surface);border-radius:4px;height:16px;overflow:hidden;"><div style="width:'+w+'%;background:var(--green);height:100%;border-radius:4px;"></div></div>'+
+            '<span style="width:56px;text-align:right;color:var(--text);">'+money(v)+'</span>'+
+          '</div>';
+        });
+      }
       // By client
       var byClient={};
       scopeJobs.forEach(function(j){ var c=j.client||'(no client)'; if(!byClient[c])byClient[c]={jobs:0,tipped:0,tips:0}; byClient[c].jobs++; var t=parseFloat(j.tips)||0; if(t>0){byClient[c].tipped++; byClient[c].tips+=t;} });
@@ -1878,6 +1919,49 @@ function buildAnalysisHTML(){
     '<div style="font-size:11px;color:var(--text3);line-height:1.5;">EET and XEC are never combined. The filters above drive the summary &amp; per-job list; this rollup always shows both companies for the period.</div>';
   h+='</div>';
 
+  // ---- Mini P&L (whole business · period) ----
+  var plIncome=0; periodJobs.forEach(function(j){ plIncome+=(parseFloat(j.earnings)||0)+(TIPS?(parseFloat(j.tips)||0):0); });
+  var exps=expensesInPeriod();
+  var plExp=0, byCat={}; exps.forEach(function(e){ var a=parseFloat(e.amount)||0; plExp+=a; byCat[e.category]=(byCat[e.category]||0)+a; });
+  var net=plIncome-plExp;
+  h+='<div class="section"><div class="section-label">Mini P&amp;L · whole business · '+periodLabel(P)+'</div>';
+  h+='<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:8px;">'+
+    card('Income',money(plIncome),'var(--green)',TIPS?'fees + tips':'fees only')+
+    card('Expenses',money(plExp),'var(--red)')+
+    card('Net profit',money(net),net>=0?'var(--green)':'var(--red)')+
+  '</div>';
+  if(plExp>0){
+    Object.keys(byCat).sort(function(a,b){return byCat[b]-byCat[a];}).forEach(function(c){
+      var pct=Math.round(byCat[c]/plExp*100);
+      h+='<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 4px;border-bottom:0.5px solid var(--border);font-size:13px;"><span style="color:var(--text2);">'+c+'</span><span style="color:var(--text);">'+money(byCat[c])+' <span style="color:var(--text3);font-size:11px;">'+pct+'%</span></span></div>';
+    });
+  }
+  h+='<div style="background:var(--surface);border:0.5px solid var(--border2);border-radius:10px;padding:10px;margin-top:10px;">'+
+    '<div style="font-size:11px;color:var(--text3);margin-bottom:6px;">Add expense</div>'+
+    '<div style="display:flex;gap:6px;flex-wrap:wrap;">'+
+      '<input id="exp-date" type="date" value="'+todayStr()+'" style="flex:1;min-width:120px;background:var(--surface);color:var(--text);border:0.5px solid var(--border2);border-radius:8px;padding:8px;font-family:inherit;">'+
+      '<select id="exp-cat" style="flex:1;min-width:120px;background:var(--surface);color:var(--text);border:0.5px solid var(--border2);border-radius:8px;padding:8px;font-family:inherit;">'+EXPENSE_CATEGORIES.map(function(c){return '<option>'+c+'</option>';}).join('')+'</select>'+
+    '</div>'+
+    '<div style="display:flex;gap:6px;margin-top:6px;">'+
+      '<input id="exp-amt" type="number" min="0" step="0.01" placeholder="Amount &#xA3;" style="flex:1;min-width:80px;background:var(--surface);color:var(--text);border:0.5px solid var(--border2);border-radius:8px;padding:8px;font-family:inherit;">'+
+      '<input id="exp-note" type="text" placeholder="Note (optional)" style="flex:2;min-width:80px;background:var(--surface);color:var(--text);border:0.5px solid var(--border2);border-radius:8px;padding:8px;font-family:inherit;">'+
+      '<button onclick="addExpenseFromForm()" class="inline-log-btn">Add</button>'+
+    '</div>'+
+  '</div>';
+  if(exps.length){
+    h+='<div class="section-label" style="padding-top:10px;">Expenses ('+exps.length+')</div>';
+    exps.forEach(function(e){
+      h+='<div style="display:flex;justify-content:space-between;align-items:center;background:var(--surface);border:0.5px solid var(--border2);border-radius:10px;padding:9px 12px;margin-bottom:6px;">'+
+        '<div style="min-width:0;flex:1;"><div style="font-size:13px;color:var(--text);">'+e.category+(e.note?' <span style="color:var(--text3);">· '+e.note+'</span>':'')+'</div>'+
+          '<div style="font-size:11px;color:var(--text3);margin-top:2px;">'+formatJobDate(e.date)+'</div></div>'+
+        '<div style="font-size:14px;color:var(--red);font-weight:600;margin-left:8px;">'+money(parseFloat(e.amount)||0)+'</div>'+
+        '<button onclick="deleteExpenseUI(\''+e.id+'\')" style="margin-left:8px;background:none;border:none;color:var(--text3);font-size:16px;cursor:pointer;font-family:inherit;">&#x2715;</button>'+
+      '</div>';
+    });
+  }
+  h+='<div style="font-size:11px;color:var(--text3);line-height:1.5;margin-top:4px;">Expenses are whole-business (not split by company). Income here is all companies for the period'+(TIPS?' incl tips':' (tips excluded)')+'.</div>';
+  h+='</div>';
+
   return h;
 }
 
@@ -1900,7 +1984,7 @@ function downloadFile(filename,text,mime){
     setTimeout(function(){document.body.removeChild(a); URL.revokeObjectURL(url);},150);
   }catch(e){ alert('Export failed: '+(e&&e.message||e)); }
 }
-function incomeCSV(jobs,withTips){
+function incomeCSV(jobs,withTips,expenses){
   jobs=jobs.slice().sort(function(a,b){ var x=parseJobDate(a.job_date), y=parseJobDate(b.job_date); return (x?+x:0)-(y?+y:0); });
   var esc=function(v){ v=(v==null?'':String(v)); return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v; };
   var cols=['Date','Job ID','Client','Company','Category','Description','Fee'];
@@ -1920,18 +2004,35 @@ function incomeCSV(jobs,withTips){
   if(withTips)tr.push(tT.toFixed(2));
   tr.push(tot.toFixed(2));
   lines.push(tr.map(esc).join(','));
+  if(expenses&&expenses.length){
+    var expTotal=0;
+    lines.push('');
+    lines.push('EXPENSES');
+    lines.push(['Date','Category','Note','Amount'].join(','));
+    expenses.slice().sort(function(a,b){ return a.date<b.date?-1:a.date>b.date?1:0; }).forEach(function(e){
+      var a=parseFloat(e.amount)||0; expTotal+=a;
+      lines.push([isoKey(e.date), e.category||'', e.note||'', a.toFixed(2)].map(esc).join(','));
+    });
+    lines.push(['EXPENSE TOTAL','','',expTotal.toFixed(2)].map(esc).join(','));
+    lines.push('');
+    lines.push('P&L SUMMARY');
+    lines.push(['Income','','',tot.toFixed(2)].map(esc).join(','));
+    lines.push(['Expenses','','',expTotal.toFixed(2)].map(esc).join(','));
+    lines.push(['Net profit','','',(tot-expTotal).toFixed(2)].map(esc).join(','));
+  }
   return lines.join('\r\n');
 }
 function exportAnalysisCSV(){
   var jobs=analysisScopeJobs();
   if(!jobs.length){ alert('No jobs in the current selection to export.'); return; }
-  var fn='CHF_income_'+(ANALYSIS_COMPANY==='All'?'all':ANALYSIS_COMPANY)+'_'+ANALYSIS_PERIOD+'_'+todayStr()+(tipsOn()?'':'_no-tips')+'.csv';
-  downloadFile(fn, incomeCSV(jobs, tipsOn()), 'text/csv');
+  var exps=(ANALYSIS_COMPANY==='All')?expensesInPeriod():null;  // P&L only meaningful whole-business
+  var fn='CHF_'+(exps&&exps.length?'PL':'income')+'_'+(ANALYSIS_COMPANY==='All'?'all':ANALYSIS_COMPANY)+'_'+ANALYSIS_PERIOD+'_'+todayStr()+(tipsOn()?'':'_no-tips')+'.csv';
+  downloadFile(fn, incomeCSV(jobs, tipsOn(), exps), 'text/csv');
 }
 
 init();
 /* Build stamp — bump on each change so the live version is verifiable in-app */
-var BUILD='2026-05-28 · CSV export';
+var BUILD='2026-05-28c · expenses, P&L, tip £/hr + trend';
 try{ var cps=document.querySelectorAll('.copyright'); for(var bi=0;bi<cps.length;bi++){ cps[bi].innerHTML+=' · <span style="color:var(--gold);">build '+BUILD+'</span>'; } }catch(e){}
 </script>
 </body>
