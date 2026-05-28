@@ -1726,6 +1726,8 @@ function buildAnalysisHTML(){
 
   h+='<div style="text-align:center;font-size:14px;color:var(--gold);font-weight:600;margin-bottom:2px;">'+(C==='All'?'All companies':C)+' · '+periodLabel(P)+'</div>';
   h+='<div style="text-align:center;font-size:12px;color:var(--text3);margin-bottom:10px;">'+M.jobs+' job'+(M.jobs!==1?'s':'')+' over '+nDays+' day'+(nDays!==1?'s':'')+'</div>';
+  h+='<button onclick="exportAnalysisCSV()" class="action-btn secondary" style="margin-bottom:4px;">&#x2B07; Export to CSV (accountant / tax)</button>';
+  h+='<div style="font-size:11px;color:var(--text3);text-align:center;margin-bottom:1rem;">'+(TIPS?'Exports the current view incl tips — declaring tips is your choice; check with your accountant.':'Tips excluded from this export.')+'</div>';
 
   function card(lbl,val,col,sub){return '<div class="stat-card"><div class="stat-label">'+lbl+'</div><div class="stat-value" style="font-size:18px;color:'+(col||'var(--text)')+';">'+val+'</div>'+(sub?'<div style="font-size:11px;color:var(--text3);margin-top:2px;">'+sub+'</div>':'')+'</div>';}
   h+='<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:8px;">'+
@@ -1879,9 +1881,57 @@ function buildAnalysisHTML(){
   return h;
 }
 
+/* ---- CSV EXPORT (MTD Phase 1 — accountant-ready, honours the tips toggle) ---- */
+function analysisScopeJobs(){
+  if(!ANALYSIS_CACHE)return [];
+  var C=ANALYSIS_COMPANY, P=ANALYSIS_PERIOD;
+  var ps=analysisPeriodStart(P), pe=new Date(); pe.setHours(23,59,59,999);
+  return ANALYSIS_CACHE.jobs.filter(function(j){
+    var pd=parseJobDate(j.job_date), ok=pd?(pd>=ps&&pd<=pe):(P==='all');
+    return ok&&(C==='All'||operatorOf(j)===C);
+  });
+}
+function downloadFile(filename,text,mime){
+  try{
+    var blob=new Blob(['﻿'+text],{type:(mime||'text/csv')+';charset=utf-8;'});
+    var url=URL.createObjectURL(blob);
+    var a=document.createElement('a'); a.href=url; a.download=filename;
+    document.body.appendChild(a); a.click();
+    setTimeout(function(){document.body.removeChild(a); URL.revokeObjectURL(url);},150);
+  }catch(e){ alert('Export failed: '+(e&&e.message||e)); }
+}
+function incomeCSV(jobs,withTips){
+  jobs=jobs.slice().sort(function(a,b){ var x=parseJobDate(a.job_date), y=parseJobDate(b.job_date); return (x?+x:0)-(y?+y:0); });
+  var esc=function(v){ v=(v==null?'':String(v)); return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v; };
+  var cols=['Date','Job ID','Client','Company','Category','Description','Fee'];
+  if(withTips)cols.push('Tip');
+  cols.push('Total');
+  var lines=[cols.join(',')], tF=0,tT=0,tot=0;
+  jobs.forEach(function(j){
+    var fee=parseFloat(j.earnings)||0, tip=withTips?(parseFloat(j.tips)||0):0, total=fee+tip;
+    tF+=fee; tT+=tip; tot+=total;
+    var desc=(j.pickup||'')+(j.dropoff?' -> '+j.dropoff:'');
+    var row=[isoKey(j.job_date), j.job_id||'', j.client||'', operatorOf(j), 'Turnover', desc, fee.toFixed(2)];
+    if(withTips)row.push(tip.toFixed(2));
+    row.push(total.toFixed(2));
+    lines.push(row.map(esc).join(','));
+  });
+  var tr=['TOTALS','','','','','',tF.toFixed(2)];
+  if(withTips)tr.push(tT.toFixed(2));
+  tr.push(tot.toFixed(2));
+  lines.push(tr.map(esc).join(','));
+  return lines.join('\r\n');
+}
+function exportAnalysisCSV(){
+  var jobs=analysisScopeJobs();
+  if(!jobs.length){ alert('No jobs in the current selection to export.'); return; }
+  var fn='CHF_income_'+(ANALYSIS_COMPANY==='All'?'all':ANALYSIS_COMPANY)+'_'+ANALYSIS_PERIOD+'_'+todayStr()+(tipsOn()?'':'_no-tips')+'.csv';
+  downloadFile(fn, incomeCSV(jobs, tipsOn()), 'text/csv');
+}
+
 init();
 /* Build stamp — bump on each change so the live version is verifiable in-app */
-var BUILD='2026-05-27c · tip stats + per-client + toggle';
+var BUILD='2026-05-28 · CSV export';
 try{ var cps=document.querySelectorAll('.copyright'); for(var bi=0;bi<cps.length;bi++){ cps[bi].innerHTML+=' · <span style="color:var(--gold);">build '+BUILD+'</span>'; } }catch(e){}
 </script>
 </body>
