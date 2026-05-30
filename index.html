@@ -67,7 +67,9 @@
 
   /* EVENT BUTTONS — mobile optimised */
   .btn-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-  .evt-btn { background: var(--surface); color: var(--text); border: 0.5px solid var(--border2); border-radius: 10px; padding: 16px 12px; font-size: 14px; font-family: inherit; cursor: pointer; text-align: left; width: 100%; min-height: 72px; display: flex; flex-direction: column; justify-content: space-between; transition: border-color 0.15s; }
+  .evt-btn { background: var(--surface); color: var(--text); border: 1px solid var(--border2); border-radius: 12px; padding: 18px 14px; font-size: 17px; font-weight: 500; font-family: inherit; cursor: pointer; text-align: left; width: 100%; min-height: 84px; display: flex; flex-direction: column; justify-content: space-between; transition: border-color 0.15s; letter-spacing: 0.2px; line-height: 1.25; }
+  .evt-btn .btn-label { font-size: 17px; font-weight: 500; }
+  .evt-btn .btn-time { font-size: 14px; font-weight: 500; }
   .evt-btn:active { background: var(--gold); color: #1a1a1a; border-color: var(--gold); }
   @keyframes flashGold { 0% { background: var(--gold); color: #1a1a1a; border-color: var(--gold); } 60% { background: var(--gold); color: #1a1a1a; border-color: var(--gold); } 100% { background: #141c14; color: var(--text); border-color: var(--green); } }
   .evt-btn.flash { animation: flashGold 0.5s ease-out forwards; }
@@ -308,6 +310,7 @@
     <div class="app-header-time" id="clock-logger"></div>
   </div>
   <div class="status-bar" id="logger-status" style="display:none;"></div>
+  <div id="next-pickup-tile" style="display:none;"></div>
   <div id="logger-content"><div class="log-empty">Loading...</div></div>
   <div class="copyright">© 2026 Chauffeur HandsFree · All rights reserved</div>
 </div>
@@ -601,7 +604,8 @@ function renderJobCard(j){
     '<div class="job-card-detail">'+(j.job_date||'')+' '+(j.job_time?j.job_time+' · ':'')+''+(j.pickup||'')+'</div>' +
     (j.dropoff?'<div class="job-card-detail">\u2192 '+j.dropoff+'</div>':'')+
     '<div class="job-card-actions">' +
-      '<button class="action-btn small" style="width:100%;" onclick="event.stopPropagation(); selectJob('+jStr+')">Set as Active Job</button>' +
+      '<button class="action-btn small" style="width:100%;margin-bottom:6px;" onclick="event.stopPropagation(); selectJob('+jStr+')">Set as Active Job</button>' +
+      '<button class="action-btn small secondary" style="width:100%;color:var(--red);border-color:var(--red);" onclick="event.stopPropagation(); cancelJob(\''+j.job_id+'\')">Cancel job</button>' +
     '</div></div>';
 }
 
@@ -614,6 +618,32 @@ function selectJob(job){
   expandedJobId=null; SESSION_EVENTS={};
   applyActiveJob(job);
   showPage('logger');
+}
+
+/* Mark a job cancelled — non-destructive: keeps it in DB so the cancellation count
+   in Review > Analysis stays accurate. Wipes it from working views (Setup, Jobs, Day Review). */
+async function cancelJob(jobId){
+  if(!jobId)return;
+  if(!confirm('Cancel '+jobId+'?\n\nIt stays in your history (counted in Analysis), but disappears from Setup, Jobs and Day Review.'))return;
+  var reason=prompt('Reason (optional):','Cancelled by XEC')||'Manual cancel from Logger';
+  var r=await sbFetch('/rest/v1/jobs?job_id=eq.'+jobId,'PATCH',{
+    status:'cancelled',
+    cancelled_at:new Date().toISOString(),
+    cancelled_reason:reason,
+    cancelled_source:'manual_lloyd'
+  });
+  if(r.ok&&r.data&&r.data.length){
+    setStatus('logger-status','success',jobId+' cancelled',3000);
+    ALL_JOBS=(ALL_JOBS||[]).filter(function(j){return j.job_id!==jobId;});
+    if(typeof JOBS_PAGE_ALL!=='undefined')JOBS_PAGE_ALL=(JOBS_PAGE_ALL||[]).filter(function(j){return j.job_id!==jobId;});
+    if(ACTIVE_JOB&&ACTIVE_JOB.job_id===jobId){ ACTIVE_JOB=null; localStorage.removeItem('chf_active_job'); }
+    expandedJobId=null;
+    renderTimeline(ALL_JOBS);
+    if(typeof renderJobsPage==='function')renderJobsPage();
+    if(typeof DAY_VIEW_DATE!=='undefined'&&DAY_VIEW_DATE&&typeof loadDayView==='function')loadDayView(DAY_VIEW_DATE);
+  } else {
+    alert('Could not cancel '+jobId+'. Check connection and try again.');
+  }
 }
 
 function showTab(tab){
@@ -1038,8 +1068,9 @@ async function loadJobEvents(jobId){
 /* ---- JOBS PAGE ---- */
 var JOB_CORE_KEYS=['At passenger pickup','Passengers onboard','Passengers dropped off'];
 var JOB_COMPLETE_SET={};
+var JOBS_PAGE_EVENTS=[]; // raw events incl timestamp for per-job stat compute
 async function loadJobsPage(){
-  JOBS_PAGE_ALL=[]; JOB_COMPLETE_SET={};
+  JOBS_PAGE_ALL=[]; JOB_COMPLETE_SET={}; JOBS_PAGE_EVENTS=[];
   var el=document.getElementById('jobs-page-list');
   el.innerHTML='<div class="log-empty">Loading...</div>';
   try{
@@ -1052,9 +1083,10 @@ async function loadJobsPage(){
       if(tb!==ta)return tb<ta?-1:1;
       return b.job_id<a.job_id?-1:1;
     });
-    // Load event types for all jobs in one query to determine completeness
-    var evR=await sbFetch('/rest/v1/events?driver_id=eq.'+DRIVER_ID+'&select=job_id,event_type&limit=5000');
+    // Load events with timestamps — used for per-job OoH/work/£-per-hr stats
+    var evR=await sbFetch('/rest/v1/events?driver_id=eq.'+DRIVER_ID+'&select=job_id,event_type,timestamp&limit=10000');
     if(evR.ok&&evR.data){
+      JOBS_PAGE_EVENTS=evR.data;
       var byJob={};
       evR.data.forEach(function(e){if(!byJob[e.job_id])byJob[e.job_id]={};byJob[e.job_id][e.event_type]=true;});
       Object.keys(byJob).forEach(function(jid){
@@ -1064,6 +1096,22 @@ async function loadJobsPage(){
     }
     renderJobsPage();
   }catch(e){el.innerHTML='<div class="log-empty">Could not load jobs</div>';}
+}
+
+/* Per-job stat tuple used by the Jobs tab: out-of-home commit minutes (jobCommitmentMin),
+   on-job (engagement) minutes, fee+tip, and £/hr against commit time. */
+function jobsPageJobStats(jobId, job){
+  var jevs=JOBS_PAGE_EVENTS.filter(function(e){return e.job_id===jobId;});
+  var commitMin=jobCommitmentMin(jobId, JOBS_PAGE_EVENTS);
+  var engMin=0;
+  var pu=jevs.filter(function(e){return e.event_type==='At passenger pickup';})[0];
+  var dr=jevs.filter(function(e){return e.event_type==='Passengers dropped off';})[0];
+  if(pu&&dr){ var d=(+new Date(dr.timestamp)-+new Date(pu.timestamp))/60000; if(d>0)engMin=d; }
+  var fee=parseFloat(job.earnings)||0;
+  var tip=tipsOn()?(parseFloat(job.tips)||0):0;
+  var total=fee+tip;
+  var rate=commitMin>0?total/commitMin*60:null;
+  return {commitMin:commitMin, engMin:engMin, fee:fee, tip:tip, total:total, rate:rate};
 }
 
 function filterJobsPage(){
@@ -1083,15 +1131,36 @@ function renderJobsPage(jobs){
     dayMap[key].push(j);
   });
   var html='';
+  function money(x){return '£'+(x||0).toFixed(2);}
+  function rate(x){return x!=null?'£'+x.toFixed(2):'—';}
   dayOrder.forEach(function(dayKey){
     var dayJobs=dayMap[dayKey];
     var allComplete=dayJobs.every(function(j){return JOB_COMPLETE_SET[j.job_id]==='complete';});
     var anyPartial=dayJobs.some(function(j){return JOB_COMPLETE_SET[j.job_id]==='partial'||JOB_COMPLETE_SET[j.job_id]==='complete';});
     var dayBorder=allComplete?'var(--green)':anyPartial?'var(--gold)':'var(--border)';
+    // Day totals — OoH (sum of per-job commit), work (sum of engMin), £ and £/hr
+    var dCommit=0, dWork=0, dFee=0, dTip=0;
+    dayJobs.forEach(function(j){
+      var st=jobsPageJobStats(j.job_id, j);
+      dCommit+=st.commitMin; dWork+=st.engMin; dFee+=st.fee; dTip+=st.tip;
+    });
+    var dTotal=dFee+dTip;
+    var dRate=dCommit>0?dTotal/dCommit*60:null;
+    var dRateColor=dRate==null?'var(--text3)':(dRate>=targetRate()?'var(--green)':'var(--red)');
     html+='<div style="border:0.5px solid '+dayBorder+';border-radius:12px;margin-bottom:12px;overflow:hidden;">';
-    html+='<div style="padding:8px 14px;background:var(--surface2);border-bottom:0.5px solid var(--border);display:flex;justify-content:space-between;align-items:center;">';
-    html+='<div style="font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:'+(allComplete?'var(--green)':anyPartial?'var(--gold)':'var(--text3)')+';">'+dayKey+'</div>';
+    html+='<div style="padding:10px 14px;background:var(--surface2);border-bottom:0.5px solid var(--border);">';
+    html+='<div style="display:flex;justify-content:space-between;align-items:center;">';
+    html+='<div style="font-size:12px;letter-spacing:1.5px;text-transform:uppercase;color:'+(allComplete?'var(--green)':anyPartial?'var(--gold)':'var(--text3)')+';font-weight:600;">'+dayKey+'</div>';
     html+='<div style="font-size:11px;color:var(--text3);">'+dayJobs.length+' job'+(dayJobs.length!==1?'s':'')+'</div>';
+    html+='</div>';
+    if(dCommit>0||dTotal>0){
+      html+='<div style="display:flex;gap:12px;margin-top:6px;font-size:11px;color:var(--text2);flex-wrap:wrap;">'+
+        '<span><span style="color:var(--text3);">OoH</span> '+(dCommit>0?fmtMins(dCommit):'—')+'</span>'+
+        '<span><span style="color:var(--text3);">Work</span> '+(dWork>0?fmtMins(dWork):'—')+'</span>'+
+        '<span><span style="color:var(--text3);">£</span> '+money(dFee)+(dTip>0?'<span style="color:var(--text3);"> +</span>'+money(dTip)+'<span style="color:var(--text3);"> tip</span>':'')+'</span>'+
+        '<span style="color:'+dRateColor+';font-weight:600;">'+rate(dRate)+'/hr</span>'+
+      '</div>';
+    }
     html+='</div>';
     dayJobs.forEach(function(j){
       var isSel=JOBS_PAGE_SELECTED===j.job_id;
@@ -1099,10 +1168,23 @@ function renderJobsPage(jobs){
       var status=JOB_COMPLETE_SET[j.job_id]||'none';
       var leftBar=status==='complete'?'var(--green)':status==='partial'?'var(--gold)':'var(--border)';
       var checkmark=status==='complete'?'<span style="font-size:11px;color:var(--green);margin-right:4px;">&#x2713;</span>':'';
+      var st=jobsPageJobStats(j.job_id, j);
+      var jRateColor=st.rate==null?'var(--text3)':(st.rate>=targetRate()?'var(--green)':'var(--red)');
       html+='<div class="job-group'+(isSel?' open':'')+'" id="jap-'+j.job_id+'" style="border-radius:0;border-left:3px solid '+leftBar+';border-top:none;border-right:none;border-bottom:0.5px solid var(--border);margin-bottom:0;">';
       html+='<div class="job-group-hdr" onclick="toggleJobsDetail(\''+j.job_id+'\')">';
-      html+='<div><div class="job-group-title">'+j.job_id+(isAct?' &middot; <span style="color:var(--gold)">Active</span>':'')+'</div>';
-      html+='<div class="job-group-meta">'+(j.client||'Unknown')+(j.job_time?' &middot; '+j.job_time:'')+'</div></div>';
+      html+='<div style="flex:1;min-width:0;">'+
+        '<div class="job-group-title">'+j.job_id+(isAct?' &middot; <span style="color:var(--gold)">Active</span>':'')+'</div>'+
+        '<div class="job-group-meta">'+(j.client||'Unknown')+(j.job_time?' &middot; '+j.job_time:'')+'</div>';
+      if(st.commitMin>0||st.total>0){
+        html+='<div style="display:flex;gap:10px;margin-top:4px;font-size:11px;color:var(--text2);flex-wrap:wrap;">'+
+          '<span><span style="color:var(--text3);">OoH</span> '+(st.commitMin>0?fmtMins(st.commitMin):'—')+'</span>'+
+          '<span><span style="color:var(--text3);">Work</span> '+(st.engMin>0?fmtMins(st.engMin):'—')+'</span>'+
+          (st.fee>0?'<span><span style="color:var(--text3);">£</span> '+money(st.fee)+'</span>':'')+
+          (st.tip>0?'<span><span style="color:var(--text3);">Tip</span> '+money(st.tip)+'</span>':'')+
+          (st.rate!=null?'<span style="color:'+jRateColor+';font-weight:600;">'+rate(st.rate)+'/hr</span>':'')+
+        '</div>';
+      }
+      html+='</div>';
       html+='<div class="job-group-right">'+checkmark+'<span class="job-group-arrow">&#x25BE;</span></div>';
       html+='</div>';
       html+='<div class="job-group-events" id="jap-ev-'+j.job_id+'">';
@@ -1126,7 +1208,10 @@ async function loadJobDetail(jobId){
   var hdr='<div style="padding:10px 14px 10px; border-bottom:0.5px solid var(--border); display:flex; justify-content:space-between; align-items:center;">'+
     '<div style="font-size:12px;color:var(--text3);">'+(job.job_date||'')+(job.job_time?' · '+job.job_time:'')+
     (job.pickup?'<br>'+job.pickup+(job.dropoff?' → '+job.dropoff:''):'')+'</div>'+
-    '<button onclick="event.stopPropagation();openAddEventModal(\''+jobId+'\')" style="background:var(--gold);color:#1a1a1a;border:none;border-radius:8px;padding:7px 13px;font-size:12px;font-weight:500;font-family:inherit;cursor:pointer;white-space:nowrap;flex-shrink:0;margin-left:10px;">+ Add</button>'+
+    '<div style="display:flex;gap:6px;flex-shrink:0;margin-left:10px;">'+
+      '<button onclick="event.stopPropagation();cancelJob(\''+jobId+'\')" style="background:var(--surface);color:var(--red);border:0.5px solid var(--red);border-radius:8px;padding:7px 11px;font-size:12px;font-weight:500;font-family:inherit;cursor:pointer;white-space:nowrap;">Cancel</button>'+
+      '<button onclick="event.stopPropagation();openAddEventModal(\''+jobId+'\')" style="background:var(--gold);color:#1a1a1a;border:none;border-radius:8px;padding:7px 13px;font-size:12px;font-weight:500;font-family:inherit;cursor:pointer;white-space:nowrap;">+ Add</button>'+
+    '</div>'+
   '</div>';
   try{
     var r=await sbFetch('/rest/v1/events?job_id=eq.'+jobId+'&driver_id=eq.'+DRIVER_ID+'&select=event_id,event_type,timestamp&order=timestamp.asc');
@@ -1300,9 +1385,67 @@ function showPage(name){
   document.getElementById('page-'+name).classList.add('active');
   document.getElementById('nav-'+name).classList.add('active');
   window.scrollTo(0,0);
-  if(name==='logger'){initDayView();}
+  if(name==='logger'){initDayView(); renderNextPickupTile();}
   if(name==='summary'&&DRIVER_ID)loadJobsPage();
 }
+
+/* Countdown tile for the next un-completed pickup of the day.
+   - Hidden if no upcoming job today
+   - Red when < 30 min, gold when < 90 min, neutral otherwise
+   - Blacklane jobs (notes mentions Blacklane) get a 90-min "Earliest start" line. */
+function renderNextPickupTile(){
+  var el=document.getElementById('next-pickup-tile'); if(!el)return;
+  var todayKey=new Date().toISOString().slice(0,10);
+  var now=new Date();
+  // Done jobs = any with Job complete event today (read from DAY_EVENTS if available)
+  var doneIds={};
+  if(typeof DAY_EVENTS!=='undefined'&&DAY_EVENTS){
+    DAY_EVENTS.forEach(function(e){if(e.event_type==='Job complete')doneIds[e.job_id]=1;});
+  }
+  var candidates=(ALL_JOBS||[]).filter(function(j){
+    if(j.status==='cancelled')return false;
+    if(doneIds[j.job_id])return false;
+    if(!j.job_date||!j.job_time)return false;
+    var iso=isoKey(j.job_date); if(iso!==todayKey)return false;
+    return true;
+  }).sort(function(a,b){return (a.job_time||'').localeCompare(b.job_time||'');});
+  if(!candidates.length){ el.style.display='none'; el.innerHTML=''; return; }
+  var j=candidates[0];
+  var hhmm=(j.job_time||'').substring(0,5);
+  var pickupDt=new Date(todayKey+'T'+hhmm+':00');
+  var diffMs=pickupDt-now, diffMin=Math.round(diffMs/60000);
+  var isBlacklane=(j.notes||'').toLowerCase().indexOf('blacklane')>=0;
+  var earliest=new Date(pickupDt.getTime()-90*60000);
+  var earliestHHMM=pad(earliest.getHours())+':'+pad(earliest.getMinutes());
+  var border, accent;
+  if(diffMin<=30){ border='var(--red)'; accent='var(--red)'; }
+  else if(diffMin<=90){ border='var(--gold)'; accent='var(--gold)'; }
+  else { border='var(--border2)'; accent='var(--text2)'; }
+  var when;
+  if(diffMin<0) when='now (overdue '+Math.abs(diffMin)+' min)';
+  else if(diffMin<60) when='in '+diffMin+' min';
+  else when='in '+Math.floor(diffMin/60)+'h '+(diffMin%60)+'m';
+  el.style.display='block';
+  el.innerHTML='<div style="background:var(--surface);border:0.5px solid '+border+';border-radius:12px;padding:12px 14px;margin-bottom:10px;">'+
+    '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">'+
+      '<div style="flex:1;min-width:0;">'+
+        '<div style="font-size:11px;color:var(--text3);letter-spacing:1.5px;text-transform:uppercase;">Next pickup'+(isBlacklane?' · <span style="color:var(--gold);">BLACKLANE</span>':'')+'</div>'+
+        '<div style="font-size:15px;color:var(--gold);font-weight:600;margin-top:3px;">'+j.job_id+' · '+hhmm+' · '+(j.client||'')+'</div>'+
+        '<div style="font-size:12px;color:var(--text2);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+(j.pickup||'')+'</div>'+
+        (isBlacklane?'<div style="font-size:11px;color:var(--text3);margin-top:4px;">Earliest start (Blacklane 90 min): <span style="color:var(--gold);font-weight:600;">'+earliestHHMM+'</span></div>':'')+
+      '</div>'+
+      '<div style="text-align:right;flex-shrink:0;">'+
+        '<div style="font-size:11px;color:var(--text3);letter-spacing:1.5px;text-transform:uppercase;">In</div>'+
+        '<div style="font-size:18px;color:'+accent+';font-weight:600;">'+when+'</div>'+
+      '</div>'+
+    '</div>'+
+  '</div>';
+}
+// Keep tile live — refresh every 30s while on the Logger page
+setInterval(function(){
+  var lp=document.getElementById('page-logger');
+  if(lp&&lp.classList.contains('active'))renderNextPickupTile();
+},30000);
 
 
 /* ---- DELETE EVENT ---- */
@@ -1438,6 +1581,16 @@ function deleteExpenseUI(id){ if(confirm('Delete this expense?')){ deleteExpense
 /* Target pay rate Lloyd wants every job to clear, measured against committed (out-of-home)
    minutes per job. Stored in localStorage so it can be tuned without a code change. */
 function targetRate(){ var v=parseFloat(localStorage.getItem('chf_target_rate')); return (v>0)?v:15; }
+function setTargetRate(){
+  var cur=targetRate();
+  var v=prompt('Target pay rate £/hr (committed time):',cur.toString());
+  if(v==null)return;
+  var n=parseFloat(v);
+  if(!(n>0)){ alert('Enter a positive number.'); return; }
+  localStorage.setItem('chf_target_rate',n.toString());
+  var el=document.getElementById('review-content');
+  if(el&&typeof ANALYSIS_CACHE!=='undefined'&&ANALYSIS_CACHE)el.innerHTML=buildAnalysisHTML();
+}
 
 /* Per-job committed-time window (minutes).
    Definition: earliest non-idle event for this job → latest non-idle event for this job.
@@ -1620,6 +1773,8 @@ async function loadReviewV2(date){
     html+='<div class="section"><div class="section-label">Out-of-Home Time Split</div>'+
       '<div style="background:var(--surface);border:0.5px solid var(--border2);border-radius:12px;padding:1.25rem 1rem;">';
     html+=renderDonut(cats,M.oohMin);
+    var dayEquiv=(M.oohMin/60/8);
+    html+='<div style="text-align:center;font-size:12px;color:var(--text3);margin-top:8px;">'+fmtMins(M.oohMin)+' total &nbsp;&middot;&nbsp; <span style="color:var(--gold);font-weight:600;">'+dayEquiv.toFixed(1)+' working days</span> at 8h/day</div>';
     html+='<div style="margin-top:1rem;">';
     cats.forEach(function(cat){ if(!cat.minutes)return; var pct=M.oohMin?Math.round(cat.minutes/M.oohMin*100):0;
       html+='<div style="display:flex;align-items:center;gap:10px;padding:9px 4px;border-bottom:0.5px solid var(--border);">'+
@@ -1899,8 +2054,11 @@ function buildAnalysisHTML(){
     {label:'Driving / admin',minutes:residMin,color:'#3a3a3a'}
   ];
   if(M.oohMin>0){
+    var dayEquivA=(M.oohMin/60/8);
     h+='<div class="section"><div class="section-label">Out-of-Home Time Split</div>'+
-      '<div style="background:var(--surface);border:0.5px solid var(--border2);border-radius:12px;padding:1.25rem 1rem;">'+renderDonut(cats,M.oohMin)+'<div style="margin-top:1rem;">';
+      '<div style="background:var(--surface);border:0.5px solid var(--border2);border-radius:12px;padding:1.25rem 1rem;">'+renderDonut(cats,M.oohMin)+
+      '<div style="text-align:center;font-size:12px;color:var(--text3);margin-top:8px;">'+fmtMins(M.oohMin)+' total &nbsp;&middot;&nbsp; <span style="color:var(--gold);font-weight:600;">'+dayEquivA.toFixed(1)+' working days</span> at 8h/day</div>'+
+      '<div style="margin-top:1rem;">';
     cats.forEach(function(cat){ if(!cat.minutes)return; var pct=Math.round(cat.minutes/M.oohMin*100);
       h+='<div style="display:flex;align-items:center;gap:10px;padding:9px 4px;border-bottom:0.5px solid var(--border);"><div style="width:10px;height:10px;border-radius:50%;background:'+cat.color+';flex-shrink:0;"></div><div style="flex:1;font-size:13px;color:var(--text2);">'+cat.label+'</div><div style="font-size:14px;font-weight:500;color:var(--text);">'+fmtMins(cat.minutes)+'</div><div style="font-size:12px;color:var(--text3);width:36px;text-align:right;">'+pct+'%</div></div>';
     });
@@ -1948,8 +2106,8 @@ function buildAnalysisHTML(){
   var tgtTotalGap=tgtTotalCommitMin>0?tgtTotalFee-(TGT*tgtTotalCommitMin/60):null;
   var tgtPerHrShortfall=tgtOverallRate!=null?(tgtOverallRate-TGT):null;
 
-  // TARGET PAY-RATE card — primary decision-making signal
-  h+='<div class="section"><div class="section-label">Target Pay Rate · &pound;'+TGT.toFixed(0)+'/hr (committed time)</div>';
+  // TARGET PAY-RATE card — primary decision-making signal; tap label to edit target
+  h+='<div class="section"><div class="section-label" onclick="setTargetRate()" style="cursor:pointer;" title="Tap to change target">Target Pay Rate · &pound;'+TGT.toFixed(0)+'/hr (committed time) · <span style="text-transform:none;letter-spacing:0;color:var(--gold);">tap to change</span></div>';
   if(tgtOverallRate==null){
     h+='<div style="background:var(--surface);border:0.5px solid var(--border2);border-radius:10px;padding:12px 14px;font-size:13px;color:var(--text3);">No commit-time data yet for this scope.</div>';
   } else {
@@ -1969,6 +2127,53 @@ function buildAnalysisHTML(){
                        '<span style="color:var(--red);">&pound;'+Math.abs(tgtTotalGap).toFixed(2)+' short of target</span>')+
       '</div>'+
     '</div></div>';
+  }
+
+  // CANCELLATIONS list — only in scope, newest first
+  if(cancelledInPeriod.length){
+    var byMo={}; cancelledInPeriod.forEach(function(j){
+      var iso=isoKey(j.job_date), mo=iso?iso.slice(0,7):'??'; byMo[mo]=(byMo[mo]||0)+1;
+    });
+    var mos=Object.keys(byMo).sort();
+    h+='<div class="section"><div class="section-label">Cancellations ('+cancelledInPeriod.length+' · '+cancelRate+'%)</div>';
+    h+='<button onclick="event.stopPropagation();exportCancellationsCSV()" class="action-btn secondary" style="margin-bottom:8px;">&#x2B07; Export cancellations CSV</button>';
+    // trend by month
+    if(mos.length>1){
+      var mxM=Math.max.apply(null,mos.map(function(m){return byMo[m];}));
+      h+='<div style="margin-bottom:8px;">';
+      mos.forEach(function(m){
+        var v=byMo[m], w=mxM>0?Math.round(v/mxM*100):0, p=m.split('-'), lbl=SHORT_MONTHS[parseInt(p[1],10)-1]+' '+p[0];
+        h+='<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;font-size:12px;">'+
+          '<span style="width:68px;color:var(--text3);flex-shrink:0;">'+lbl+'</span>'+
+          '<div style="flex:1;background:var(--surface);border-radius:4px;height:14px;overflow:hidden;"><div style="width:'+w+'%;background:var(--red);height:100%;border-radius:4px;"></div></div>'+
+          '<span style="width:24px;text-align:right;color:var(--text);">'+v+'</span>'+
+        '</div>';
+      });
+      h+='</div>';
+    }
+    // list
+    var cs=cancelledInPeriod.slice().sort(function(a,b){
+      var ta=a.cancelled_at?+new Date(a.cancelled_at):0, tb=b.cancelled_at?+new Date(b.cancelled_at):0;
+      return tb-ta;
+    });
+    cs.forEach(function(j){
+      var src=j.cancelled_source||'?';
+      var srcCol = src==='email'?'#3b82f6': src==='sms'?'#22c55e': src==='email+sms'?'#a855f7': src==='manual_lloyd'?'var(--gold)':'var(--text3)';
+      var when=j.cancelled_at?new Date(j.cancelled_at).toISOString().slice(0,10):'';
+      h+='<div style="background:var(--surface);border:0.5px solid var(--border2);border-radius:10px;padding:10px 14px;margin-bottom:6px;">'+
+        '<div style="display:flex;justify-content:space-between;align-items:flex-start;">'+
+          '<div style="flex:1;min-width:0;">'+
+            '<div style="font-size:14px;color:var(--text);font-weight:500;">'+j.job_id+'<span style="font-size:11px;color:var(--text3);font-weight:400;"> · '+operatorOf(j)+'</span></div>'+
+            '<div style="font-size:11px;color:var(--text3);margin-top:2px;">'+formatJobDate(j.job_date)+(j.job_time?' '+j.job_time.substring(0,5):'')+'</div>'+
+          '</div>'+
+          '<div style="text-align:right;flex-shrink:0;margin-left:10px;">'+
+            '<div style="font-size:10px;background:'+srcCol+';color:#1a1a1a;padding:2px 7px;border-radius:6px;font-weight:600;display:inline-block;">'+src+'</div>'+
+            (when?'<div style="font-size:10px;color:var(--text3);margin-top:3px;">cancelled '+when+'</div>':'')+
+          '</div>'+
+        '</div>'+
+      '</div>';
+    });
+    h+='</div>';
   }
 
   h+='<div class="section"><div class="section-label">Per-Job Breakdown ('+sj.length+')</div>';
@@ -2126,9 +2331,34 @@ function exportAnalysisCSV(){
   downloadFile(fn, incomeCSV(jobs, tipsOn(), exps), 'text/csv');
 }
 
+/* CSV export of cancelled jobs — for admin / reconciliation with operator records.
+   Honours the current Analysis company + period filters. */
+function exportCancellationsCSV(){
+  if(!ANALYSIS_CACHE||!ANALYSIS_CACHE.cancelled||!ANALYSIS_CACHE.cancelled.length){
+    alert('No cancellations in cache. Open Analysis first.'); return;
+  }
+  var C=ANALYSIS_COMPANY, P=ANALYSIS_PERIOD;
+  var ps=analysisPeriodStart(P), pe=new Date(); pe.setHours(23,59,59,999);
+  var rows=ANALYSIS_CACHE.cancelled.filter(function(j){
+    if(C!=='All'&&operatorOf(j)!==C)return false;
+    var pd=parseJobDate(j.job_date); if(!pd)return P==='all';
+    return pd>=ps&&pd<=pe;
+  });
+  if(!rows.length){ alert('No cancellations in the current selection.'); return; }
+  rows.sort(function(a,b){return (b.cancelled_at||'').localeCompare(a.cancelled_at||'');});
+  function esc(s){ if(s==null)return ''; var v=String(s); return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v; }
+  var hdr=['job_id','operator','client','job_date','job_time','pickup','dropoff','cancelled_at','cancelled_source','cancelled_reason'];
+  var lines=[hdr.join(',')];
+  rows.forEach(function(j){
+    lines.push([j.job_id,operatorOf(j),j.client,j.job_date,j.job_time,j.pickup,j.dropoff,j.cancelled_at,j.cancelled_source,j.cancelled_reason].map(esc).join(','));
+  });
+  var fn='CHF_cancellations_'+(C==='All'?'all':C)+'_'+P+'_'+todayStr()+'.csv';
+  downloadFile(fn, lines.join('\n')+'\n', 'text/csv');
+}
+
 init();
 /* Build stamp — bump on each change so the live version is verifiable in-app */
-var BUILD='2026-05-30c · target £15/hr + per-job commitment';
+var BUILD='2026-05-30f · jobs-page stats + 8h-day equivalent + bigger logging buttons';
 try{ var cps=document.querySelectorAll('.copyright'); for(var bi=0;bi<cps.length;bi++){ cps[bi].innerHTML+=' · <span style="color:var(--gold);">build '+BUILD+'</span>'; } }catch(e){}
 </script>
 </body>
