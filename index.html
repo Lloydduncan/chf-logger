@@ -1099,7 +1099,8 @@ async function loadJobsPage(){
 }
 
 /* Per-job stat tuple used by the Jobs tab: out-of-home commit minutes (jobCommitmentMin),
-   on-job (engagement) minutes, fee+tip, and £/hr against commit time. */
+   on-job (engagement) minutes, fee+tip, and £/hr against commit time.
+   Rate is null when there's no fee yet — the UI shows "fee?" rather than a misleading £0/hr. */
 function jobsPageJobStats(jobId, job){
   var jevs=JOBS_PAGE_EVENTS.filter(function(e){return e.job_id===jobId;});
   var commitMin=jobCommitmentMin(jobId, JOBS_PAGE_EVENTS);
@@ -1107,11 +1108,15 @@ function jobsPageJobStats(jobId, job){
   var pu=jevs.filter(function(e){return e.event_type==='At passenger pickup';})[0];
   var dr=jevs.filter(function(e){return e.event_type==='Passengers dropped off';})[0];
   if(pu&&dr){ var d=(+new Date(dr.timestamp)-+new Date(pu.timestamp))/60000; if(d>0)engMin=d; }
-  var fee=parseFloat(job.earnings)||0;
-  var tip=tipsOn()?(parseFloat(job.tips)||0):0;
+  var feeRaw=job.earnings, tipRaw=job.tips;
+  var fee=parseFloat(feeRaw)||0;
+  var tip=tipsOn()?(parseFloat(tipRaw)||0):0;
   var total=fee+tip;
-  var rate=commitMin>0?total/commitMin*60:null;
-  return {commitMin:commitMin, engMin:engMin, fee:fee, tip:tip, total:total, rate:rate};
+  var feeEntered=(feeRaw!=null&&feeRaw!=='');
+  // Only compute a rate when we have BOTH commit time AND an actual fee — avoids
+  // the misleading "£0.00/hr in red" on jobs you haven't entered earnings for yet.
+  var rate=(commitMin>0&&total>0)?total/commitMin*60:null;
+  return {commitMin:commitMin, engMin:engMin, fee:fee, tip:tip, total:total, rate:rate, feeEntered:feeEntered};
 }
 
 function filterJobsPage(){
@@ -1138,15 +1143,20 @@ function renderJobsPage(jobs){
     var allComplete=dayJobs.every(function(j){return JOB_COMPLETE_SET[j.job_id]==='complete';});
     var anyPartial=dayJobs.some(function(j){return JOB_COMPLETE_SET[j.job_id]==='partial'||JOB_COMPLETE_SET[j.job_id]==='complete';});
     var dayBorder=allComplete?'var(--green)':anyPartial?'var(--gold)':'var(--border)';
-    // Day totals — OoH (sum of per-job commit), work (sum of engMin), £ and £/hr
-    var dCommit=0, dWork=0, dFee=0, dTip=0;
+    // Day totals — OoH (sum of per-job commit), work (sum of engMin), £ and £/hr.
+    // Track whether ANY job that day has a fee entered — drives whether £/hr is shown
+    // or replaced with a "fees pending" note (avoids misleading £0/hr).
+    var dCommit=0, dWork=0, dFee=0, dTip=0, dFeesEntered=0, dJobsWithCommit=0;
     dayJobs.forEach(function(j){
       var st=jobsPageJobStats(j.job_id, j);
       dCommit+=st.commitMin; dWork+=st.engMin; dFee+=st.fee; dTip+=st.tip;
+      if(st.feeEntered)dFeesEntered++;
+      if(st.commitMin>0)dJobsWithCommit++;
     });
     var dTotal=dFee+dTip;
-    var dRate=dCommit>0?dTotal/dCommit*60:null;
+    var dRate=(dCommit>0&&dTotal>0)?dTotal/dCommit*60:null;
     var dRateColor=dRate==null?'var(--text3)':(dRate>=targetRate()?'var(--green)':'var(--red)');
+    var dPartial=(dFeesEntered>0&&dFeesEntered<dayJobs.length);
     html+='<div style="border:0.5px solid '+dayBorder+';border-radius:12px;margin-bottom:12px;overflow:hidden;">';
     html+='<div style="padding:10px 14px;background:var(--surface2);border-bottom:0.5px solid var(--border);">';
     html+='<div style="display:flex;justify-content:space-between;align-items:center;">';
@@ -1157,8 +1167,10 @@ function renderJobsPage(jobs){
       html+='<div style="display:flex;gap:12px;margin-top:6px;font-size:11px;color:var(--text2);flex-wrap:wrap;">'+
         '<span><span style="color:var(--text3);">OoH</span> '+(dCommit>0?fmtMins(dCommit):'—')+'</span>'+
         '<span><span style="color:var(--text3);">Work</span> '+(dWork>0?fmtMins(dWork):'—')+'</span>'+
-        '<span><span style="color:var(--text3);">£</span> '+money(dFee)+(dTip>0?'<span style="color:var(--text3);"> +</span>'+money(dTip)+'<span style="color:var(--text3);"> tip</span>':'')+'</span>'+
-        '<span style="color:'+dRateColor+';font-weight:600;">'+rate(dRate)+'/hr</span>'+
+        (dTotal>0?'<span><span style="color:var(--text3);">£</span> '+money(dFee)+(dTip>0?'<span style="color:var(--text3);"> +</span>'+money(dTip)+'<span style="color:var(--text3);"> tip</span>':'')+'</span>':'')+
+        (dRate!=null
+          ? '<span style="color:'+dRateColor+';font-weight:600;">'+rate(dRate)+'/hr'+(dPartial?'<span style="color:var(--text3);font-weight:400;"> (partial — '+(dayJobs.length-dFeesEntered)+' fee'+((dayJobs.length-dFeesEntered)!==1?'s':'')+' pending)</span>':'')+'</span>'
+          : '<span style="color:var(--gold);">fees pending</span>')+
       '</div>';
     }
     html+='</div>';
@@ -1181,7 +1193,9 @@ function renderJobsPage(jobs){
           '<span><span style="color:var(--text3);">Work</span> '+(st.engMin>0?fmtMins(st.engMin):'—')+'</span>'+
           (st.fee>0?'<span><span style="color:var(--text3);">£</span> '+money(st.fee)+'</span>':'')+
           (st.tip>0?'<span><span style="color:var(--text3);">Tip</span> '+money(st.tip)+'</span>':'')+
-          (st.rate!=null?'<span style="color:'+jRateColor+';font-weight:600;">'+rate(st.rate)+'/hr</span>':'')+
+          (st.rate!=null
+            ? '<span style="color:'+jRateColor+';font-weight:600;">'+rate(st.rate)+'/hr</span>'
+            : (st.commitMin>0?'<span style="color:var(--gold);">fee?</span>':''))+
         '</div>';
       }
       html+='</div>';
@@ -2358,7 +2372,7 @@ function exportCancellationsCSV(){
 
 init();
 /* Build stamp — bump on each change so the live version is verifiable in-app */
-var BUILD='2026-05-30f · jobs-page stats + 8h-day equivalent + bigger logging buttons';
+var BUILD='2026-05-30g · jobs-page distinguishes "no fee yet" from £0/hr';
 try{ var cps=document.querySelectorAll('.copyright'); for(var bi=0;bi<cps.length;bi++){ cps[bi].innerHTML+=' · <span style="color:var(--gold);">build '+BUILD+'</span>'; } }catch(e){}
 </script>
 </body>
