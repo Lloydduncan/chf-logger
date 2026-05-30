@@ -1113,16 +1113,55 @@ function estimateXecFee(job){
   var dr=(job.dropoff||'').toLowerCase();
   // Hourly jobs — caller must enter the actual fee
   if(/as directed|hourly|by the hour|hours hire|wedding/.test(notes+' '+(job.client||'').toLowerCase()))return null;
-  // Long-distance signals where we can't guess without mileage — caller enters fee
-  if(/braemar|fife arms|inverness|aberdeen|glasgow|st andrews|fort william|highland|edinburgh napier|lake district/.test(pu+' '+dr))return null;
-  // Mileage hint sometimes captured from booking app notes (e.g. Blacklane "13.7 mi")
-  var mile=notes.match(/(\d+(?:\.\d+)?)\s*mi\b/);
-  if(mile){
-    var m=parseFloat(mile[1]);
-    if(m<=20)return 18;
-    return Math.round((18+(m-20)*0.6)*100)/100;
+  // 1) Prefer the manually-entered distance_mi field (most reliable).
+  var miles=null;
+  if(job.distance_mi!=null&&job.distance_mi!==''){
+    var dmi=parseFloat(job.distance_mi);
+    if(!isNaN(dmi)&&dmi>0)miles=dmi;
   }
-  return 18; // default short-job rate
+  // 2) Fall back to mileage parsed from booking app notes (e.g. Blacklane "13.7 mi")
+  if(miles==null){
+    var mile=notes.match(/(\d+(?:\.\d+)?)\s*mi\b/);
+    if(mile)miles=parseFloat(mile[1]);
+  }
+  if(miles!=null){
+    if(miles<=20)return 18;
+    return Math.round((18+(miles-20)*0.6)*100)/100;
+  }
+  // 3) No mileage info — block estimate for known long-distance destinations so
+  //    we don't silently quote £18 against a Braemar / Fife Arms run.
+  if(/braemar|fife arms|inverness|aberdeen|glasgow|st andrews|fort william|highland|edinburgh napier|lake district/.test(pu+' '+dr))return null;
+  return 18; // default short-job rate (Edinburgh-area)
+}
+
+/* Prompt for the per-job distance in miles and save to jobs.distance_mi.
+   Used to refine the £/hr estimate on long jobs before the chauffeur statement arrives. */
+async function setJobDistance(jobId){
+  if(!jobId)return;
+  var existing=null;
+  if(typeof JOBS_PAGE_ALL!=='undefined'){
+    var j=(JOBS_PAGE_ALL||[]).find(function(x){return x.job_id===jobId;});
+    if(j&&j.distance_mi!=null)existing=j.distance_mi;
+  }
+  var v=prompt('Distance in miles (one-way) for '+jobId+':',existing!=null?String(existing):'');
+  if(v==null)return;
+  v=v.trim();
+  var n=v===''?null:parseFloat(v);
+  if(v!==''&&(!isFinite(n)||n<0)){ alert('Enter a positive number of miles, or leave blank to clear.'); return; }
+  var r=await sbFetch('/rest/v1/jobs?job_id=eq.'+jobId,'PATCH',{distance_mi:n});
+  if(r.ok&&r.data&&r.data.length){
+    setStatus('logger-status','success',jobId+' distance '+(n==null?'cleared':n+' mi saved'),3000);
+    if(typeof JOBS_PAGE_ALL!=='undefined'){
+      JOBS_PAGE_ALL=(JOBS_PAGE_ALL||[]).map(function(x){return x.job_id===jobId?Object.assign({},x,{distance_mi:n}):x;});
+    }
+    if(typeof ALL_JOBS!=='undefined'){
+      ALL_JOBS=(ALL_JOBS||[]).map(function(x){return x.job_id===jobId?Object.assign({},x,{distance_mi:n}):x;});
+    }
+    if(typeof renderJobsPage==='function')renderJobsPage();
+    if(typeof renderTimeline==='function'&&typeof ALL_JOBS!=='undefined')renderTimeline(ALL_JOBS);
+  } else {
+    alert('Could not save distance for '+jobId+'. Check connection.');
+  }
 }
 
 /* Per-job stat tuple used by the Jobs tab: out-of-home commit minutes (jobCommitmentMin),
@@ -1244,9 +1283,19 @@ function renderJobsPage(jobs){
         if(st.rate!=null){ jRateBit='<span style="color:'+jRateColor+';font-weight:600;">'+rate(st.rate)+'/hr</span>'; }
         else if(st.rateEst!=null){ jRateBit='<span style="color:'+jEstColor+';font-weight:600;">≈'+rate(st.rateEst)+'/hr</span>'; }
         else if(st.commitMin>0){ jRateBit='<span style="color:var(--gold);">fee?</span>'; }
-        html+='<div style="display:flex;gap:10px;margin-top:4px;font-size:11px;color:var(--text2);flex-wrap:wrap;">'+
+        // Distance — entered miles are tappable to edit; missing miles show a "+ dist" button
+        // (only when the fee isn't already entered, to nudge Lloyd toward better estimates).
+        var hasDist=(j.distance_mi!=null&&j.distance_mi!=='');
+        var jDistBit='';
+        if(hasDist){
+          jDistBit='<span onclick="event.stopPropagation();setJobDistance(\''+j.job_id+'\')" style="cursor:pointer;border-bottom:1px dashed var(--text3);"><span style="color:var(--text3);">📏</span> '+(+j.distance_mi)+' mi</span>';
+        } else if(!st.feeEntered){
+          jDistBit='<span onclick="event.stopPropagation();setJobDistance(\''+j.job_id+'\')" style="cursor:pointer;color:var(--gold);border:0.5px dashed var(--gold);border-radius:6px;padding:1px 6px;">+ dist</span>';
+        }
+        html+='<div style="display:flex;gap:10px;margin-top:4px;font-size:11px;color:var(--text2);flex-wrap:wrap;align-items:center;">'+
           '<span><span style="color:var(--text3);">OoH</span> '+(st.commitMin>0?fmtMins(st.commitMin):'—')+'</span>'+
           '<span><span style="color:var(--text3);">Work</span> '+(st.engMin>0?fmtMins(st.engMin):'—')+'</span>'+
+          jDistBit+
           jFeeBit+
           (st.tip>0?'<span><span style="color:var(--text3);">Tip</span> '+money(st.tip)+'</span>':'')+
           jRateBit+
@@ -1948,7 +1997,7 @@ async function renderAnalysis(){
   var el=document.getElementById('review-content'); if(!el)return;
   el.innerHTML='<div class="log-empty">Loading analysis...</div>';
   try{
-    var jobsR=await sbFetch('/rest/v1/jobs?driver_id=eq.'+DRIVER_ID+'&select=job_id,job_date,job_time,client,pickup,dropoff,earnings,tips,status,cancelled_at,cancelled_reason,cancelled_source&limit=1000');
+    var jobsR=await sbFetch('/rest/v1/jobs?driver_id=eq.'+DRIVER_ID+'&select=job_id,job_date,job_time,client,pickup,dropoff,earnings,tips,status,cancelled_at,cancelled_reason,cancelled_source,notes,distance_mi&limit=1000');
     var evR=await sbFetch('/rest/v1/events?driver_id=eq.'+DRIVER_ID+'&select=job_id,event_type,timestamp&limit=10000');
     if(!jobsR.ok||!evR.ok){el.innerHTML='<div class="log-empty">Could not load analysis</div>';return;}
     var evCount={}; (evR.data||[]).forEach(function(e){evCount[e.job_id]=(evCount[e.job_id]||0)+1;});
@@ -2157,42 +2206,73 @@ function buildAnalysisHTML(){
     if(tb!==ta)return tb-ta;
     return (a.job_time||'')<(b.job_time||'')?-1:1;
   });
-  // Aggregate target-rate analysis across all jobs in scope
-  var TGT=targetRate(), tgtTotalCommitMin=0, tgtTotalFee=0, tgtJobsRated=0, tgtJobsHit=0;
-  var perJobCommit={}; // jobId → {mins, rate, gap}
+  // Aggregate target-rate analysis across all jobs in scope.
+  // Three buckets per the fee-estimate-ux contract:
+  //   • confirmed  — earnings entered, rate is real
+  //   • estimated  — earnings null but estimateXecFee yields a value (£18 default / mileage rule)
+  //   • unknown    — earnings null AND no estimate possible (hourly / Highland / EET) → excluded from rate so it doesn't drag the figure to £0
+  var TGT=targetRate();
+  var cConfMin=0, cConfTotal=0, cConfHit=0, cConfCount=0;
+  var cEstMin=0,  cEstTotal=0,  cEstHit=0,  cEstCount=0;
+  var cUnkMin=0,  cUnkCount=0;
+  var perJobCommit={}; // jobId → {kind, mins, total, rate, gap, est?}
   sj.forEach(function(j){
     var cm=jobCommitmentMin(j.job_id,scopeEvents);
-    var fee=(parseFloat(j.earnings)||0)+(TIPS?(parseFloat(j.tips)||0):0);
-    if(cm>0){
-      var r=fee/cm*60, gap=fee-(TGT*cm/60);
-      perJobCommit[j.job_id]={mins:cm,rate:r,gap:gap};
-      tgtTotalCommitMin+=cm; tgtTotalFee+=fee; tgtJobsRated++;
-      if(r>=TGT)tgtJobsHit++;
+    if(cm<=0)return;
+    var feeRaw=j.earnings;
+    var feeEntered=(feeRaw!=null&&feeRaw!=='');
+    var feeAct=parseFloat(feeRaw)||0;
+    var tip=TIPS?(parseFloat(j.tips)||0):0;
+    if(feeEntered){
+      var totalAct=feeAct+tip, r=totalAct/cm*60, gap=totalAct-(TGT*cm/60);
+      perJobCommit[j.job_id]={kind:'confirmed',mins:cm,total:totalAct,rate:r,gap:gap};
+      cConfMin+=cm; cConfTotal+=totalAct; cConfCount++; if(r>=TGT)cConfHit++;
+    } else {
+      var feeEst=estimateXecFee(j);
+      if(feeEst!=null){
+        var totalEst=feeEst+tip, rEst=totalEst/cm*60, gapEst=totalEst-(TGT*cm/60);
+        perJobCommit[j.job_id]={kind:'estimated',mins:cm,total:totalEst,rate:rEst,gap:gapEst,est:feeEst};
+        cEstMin+=cm; cEstTotal+=totalEst; cEstCount++; if(rEst>=TGT)cEstHit++;
+      } else {
+        perJobCommit[j.job_id]={kind:'unknown',mins:cm};
+        cUnkMin+=cm; cUnkCount++;
+      }
     }
   });
-  var tgtOverallRate=tgtTotalCommitMin>0?tgtTotalFee/tgtTotalCommitMin*60:null;
-  var tgtTotalGap=tgtTotalCommitMin>0?tgtTotalFee-(TGT*tgtTotalCommitMin/60):null;
-  var tgtPerHrShortfall=tgtOverallRate!=null?(tgtOverallRate-TGT):null;
+  var ratedMin=cConfMin+cEstMin, ratedTotal=cConfTotal+cEstTotal, ratedCount=cConfCount+cEstCount, ratedHit=cConfHit+cEstHit;
+  var rateConf=cConfMin>0?cConfTotal/cConfMin*60:null;
+  var rateBlend=ratedMin>0?ratedTotal/ratedMin*60:null;
+  var hasEst=cEstCount>0;
+  var primaryRate=hasEst?rateBlend:rateConf;
+  var primaryPrefix=hasEst?'≈':'';
+  var primaryGap=primaryRate!=null?(primaryRate-TGT):null;
 
   // TARGET PAY-RATE card — primary decision-making signal; tap label to edit target
   h+='<div class="section"><div class="section-label" onclick="setTargetRate()" style="cursor:pointer;" title="Tap to change target">Target Pay Rate · &pound;'+TGT.toFixed(0)+'/hr (committed time) · <span style="text-transform:none;letter-spacing:0;color:var(--gold);">tap to change</span></div>';
-  if(tgtOverallRate==null){
-    h+='<div style="background:var(--surface);border:0.5px solid var(--border2);border-radius:10px;padding:12px 14px;font-size:13px;color:var(--text3);">No commit-time data yet for this scope.</div>';
+  if(primaryRate==null){
+    h+='<div style="background:var(--surface);border:0.5px solid var(--border2);border-radius:10px;padding:12px 14px;font-size:13px;color:var(--text3);">No rateable jobs in this scope yet.'+(cUnkCount>0?' '+cUnkCount+' job'+(cUnkCount!==1?'s':'')+' need a fee entered (hourly / long-distance).':'')+'</div>';
   } else {
-    var hit=tgtOverallRate>=TGT;
+    var hit=primaryRate>=TGT;
     var headColor=hit?'var(--green)':'var(--red)';
+    var totalGap=ratedTotal-(TGT*ratedMin/60);
     h+='<div style="background:var(--surface);border:0.5px solid '+headColor+';border-radius:10px;padding:14px;margin-bottom:8px;">'+
       '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px;">'+
-        '<div><div style="font-size:11px;color:var(--text3);letter-spacing:1px;">ACHIEVING</div>'+
-          '<div style="font-size:22px;color:'+headColor+';font-weight:600;">'+rate(tgtOverallRate)+'/hr</div></div>'+
+        '<div><div style="font-size:11px;color:var(--text3);letter-spacing:1px;">ACHIEVING'+(hasEst?' (incl. est)':'')+'</div>'+
+          '<div style="font-size:22px;color:'+headColor+';font-weight:600;">'+primaryPrefix+rate(primaryRate)+'/hr</div></div>'+
         '<div style="text-align:right;"><div style="font-size:11px;color:var(--text3);letter-spacing:1px;">VS TARGET</div>'+
-          '<div style="font-size:18px;color:'+headColor+';font-weight:600;">'+(hit?'+':'')+'&pound;'+tgtPerHrShortfall.toFixed(2)+'/hr</div></div>'+
+          '<div style="font-size:18px;color:'+headColor+';font-weight:600;">'+(hit?'+':'')+'&pound;'+primaryGap.toFixed(2)+'/hr</div></div>'+
       '</div>'+
       '<div style="font-size:12px;color:var(--text3);border-top:0.5px solid var(--border);padding-top:8px;">'+
-        tgtJobsHit+' of '+tgtJobsRated+' jobs hit &pound;'+TGT.toFixed(0)+'/hr · '+
-        fmtMins(tgtTotalCommitMin)+' committed · '+
-        (tgtTotalGap>=0?'<span style="color:var(--green);">&pound;'+tgtTotalGap.toFixed(2)+' above target</span>':
-                       '<span style="color:var(--red);">&pound;'+Math.abs(tgtTotalGap).toFixed(2)+' short of target</span>')+
+        ratedHit+' of '+ratedCount+' jobs hit &pound;'+TGT.toFixed(0)+'/hr · '+
+        fmtMins(ratedMin)+' committed · '+
+        (totalGap>=0?'<span style="color:var(--green);">&pound;'+totalGap.toFixed(2)+' above target</span>':
+                     '<span style="color:var(--red);">&pound;'+Math.abs(totalGap).toFixed(2)+' short of target</span>')+
+      '</div>'+
+      // Composition footer — tells Lloyd how much of the figure is real vs estimated vs missing
+      '<div style="font-size:11px;color:var(--text3);border-top:0.5px solid var(--border);padding-top:6px;margin-top:6px;">'+
+        cConfCount+' confirmed · '+
+        (cEstCount>0?'<span style="color:var(--gold);">'+cEstCount+' estimated (&pound;'+cEstTotal.toFixed(2)+')</span> · ':'')+
+        (cUnkCount>0?'<span style="color:var(--gold);">'+cUnkCount+' need manual fee</span>':(cEstCount===0?'<span style="color:var(--green);">all fees entered</span>':''))+
       '</div>'+
     '</div></div>';
   }
@@ -2249,16 +2329,42 @@ function buildAnalysisHTML(){
     var jev=scopeEvents.filter(function(e){return e.job_id===job.job_id;});
     var jm=computeDayMetrics([job],jev);
     var fee=parseFloat(job.earnings)||0, tip=TIPS?(parseFloat(job.tips)||0):0;
-    var perHr=jm.engMin>0?fee/jm.engMin*60:null;
+    var perHr=jm.engMin>0&&fee>0?fee/jm.engMin*60:null;
     var commit=perJobCommit[job.job_id]||null;
     var pk=jev.filter(function(e){return e.event_type==='At passenger pickup';}).length;
     var dr=jev.filter(function(e){return e.event_type==='Passengers dropped off';}).length;
     var ok=pk>0&&dr>0&&jm.engMin>0;
     var op=operatorOf(job);
+    // Three-state badge: confirmed (solid colour), estimated (≈, same colour vs target), unknown (gold "fee?")
     var tgtBadge='';
-    if(commit&&(fee+tip)>0){
-      var hit=commit.rate>=TGT;
-      tgtBadge=' <span style="font-size:10px;background:'+(hit?'var(--green)':'var(--red)')+';color:#1a1a1a;padding:2px 6px;border-radius:6px;font-weight:600;">'+(hit?'✓':'⌃')+' '+rate(commit.rate)+'/hr</span>';
+    if(commit){
+      if(commit.kind==='confirmed'){
+        var hitC=commit.rate>=TGT;
+        tgtBadge=' <span style="font-size:10px;background:'+(hitC?'var(--green)':'var(--red)')+';color:#1a1a1a;padding:2px 6px;border-radius:6px;font-weight:600;">'+(hitC?'✓':'⌃')+' '+rate(commit.rate)+'/hr</span>';
+      } else if(commit.kind==='estimated'){
+        var hitE=commit.rate>=TGT;
+        tgtBadge=' <span style="font-size:10px;background:'+(hitE?'var(--green)':'var(--red)')+';color:#1a1a1a;padding:2px 6px;border-radius:6px;font-weight:600;">'+(hitE?'✓':'⌃')+' ≈'+rate(commit.rate)+'/hr</span>';
+      } else {
+        tgtBadge=' <span style="font-size:10px;background:var(--gold);color:#1a1a1a;padding:2px 6px;border-radius:6px;font-weight:600;">fee?</span>';
+      }
+    }
+    // Right-side £ and rate lines
+    var rightFee='';
+    if(fee||tip){
+      rightFee='<div style="font-size:15px;color:var(--green);font-weight:600;">'+(fee?money(fee):'<span style="color:var(--text3);">no fee</span>')+(tip?'<span style="font-size:10px;color:var(--text3);font-weight:400;"> +'+money(tip)+' tip</span>':'')+'</div>';
+    } else if(commit&&commit.kind==='estimated'){
+      rightFee='<div style="font-size:15px;color:var(--gold);font-weight:600;">est '+money(commit.est)+'</div>';
+    } else {
+      rightFee='<div style="font-size:11px;color:var(--text3);">no fee/tip</div>';
+    }
+    var rightRate='';
+    if(perHr!=null) rightRate+='<div style="font-size:11px;color:var(--text3);margin-top:2px;">'+rate(perHr)+'/hr on job</div>';
+    if(commit&&commit.rate!=null){
+      var prefix=commit.kind==='estimated'?'≈':'';
+      var gapStr=commit.gap>=0?'<span style="color:var(--green);">+&pound;'+commit.gap.toFixed(2)+'</span>':'<span style="color:var(--red);">&minus;&pound;'+Math.abs(commit.gap).toFixed(2)+'</span>';
+      rightRate+='<div style="font-size:11px;color:var(--text3);margin-top:1px;">'+prefix+rate(commit.rate)+'/hr OoH · '+gapStr+'</div>';
+    } else if(commit&&commit.kind==='unknown'){
+      rightRate+='<div style="font-size:11px;color:var(--gold);margin-top:1px;">enter fee to rate</div>';
     }
     h+='<div onclick="analysisJobTap(\''+(job.job_date||'')+'\',\''+op+'\')" style="background:var(--surface);border:0.5px solid '+(ok?'var(--border2)':'var(--gold-dim)')+';border-radius:10px;padding:12px 14px;margin-bottom:6px;cursor:pointer;">'+
       '<div style="display:flex;justify-content:space-between;align-items:flex-start;">'+
@@ -2268,9 +2374,7 @@ function buildAnalysisHTML(){
           '<div style="font-size:11px;color:var(--text3);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+(job.pickup||'')+(job.dropoff?' → '+job.dropoff:'')+'</div>'+
         '</div>'+
         '<div style="text-align:right;flex-shrink:0;margin-left:10px;">'+
-          ((fee||tip)?'<div style="font-size:15px;color:var(--green);font-weight:600;">'+(fee?money(fee):'<span style="color:var(--text3);">no fee</span>')+(tip?'<span style="font-size:10px;color:var(--text3);font-weight:400;"> +'+money(tip)+' tip</span>':'')+'</div>':'<div style="font-size:11px;color:var(--text3);">no fee/tip</div>')+
-          (perHr!=null?'<div style="font-size:11px;color:var(--text3);margin-top:2px;">'+rate(perHr)+'/hr on job</div>':'')+
-          (commit?'<div style="font-size:11px;color:var(--text3);margin-top:1px;">'+rate(commit.rate)+'/hr OoH · '+(commit.gap>=0?'<span style="color:var(--green);">+&pound;'+commit.gap.toFixed(2)+'</span>':'<span style="color:var(--red);">&minus;&pound;'+Math.abs(commit.gap).toFixed(2)+'</span>')+'</div>':'')+
+          rightFee+rightRate+
         '</div>'+
       '</div>'+
       '<div style="display:flex;gap:12px;margin-top:8px;font-size:11px;color:var(--text2);">'+
@@ -2426,7 +2530,7 @@ function exportCancellationsCSV(){
 
 init();
 /* Build stamp — bump on each change so the live version is verifiable in-app */
-var BUILD='2026-05-30h · auto-estimate £18 XEC fee until chauffeur statement reconciles';
+var BUILD='2026-05-30j · Analysis target card + per-job tiles use confirmed/estimated/unknown contract';
 try{ var cps=document.querySelectorAll('.copyright'); for(var bi=0;bi<cps.length;bi++){ cps[bi].innerHTML+=' · <span style="color:var(--gold);">build '+BUILD+'</span>'; } }catch(e){}
 </script>
 </body>
