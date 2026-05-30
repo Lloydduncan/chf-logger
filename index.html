@@ -1098,9 +1098,36 @@ async function loadJobsPage(){
   }catch(e){el.innerHTML='<div class="log-empty">Could not load jobs</div>';}
 }
 
+/* XEC fee estimator — used as a working assumption until the chauffeur statement
+   confirms actual earnings. Lloyd's tariff:
+     • £18 flat for jobs ≤ 20 mi (covers airport pickups, in-Edinburgh transfers).
+     • £18 + 60p per mile above 20 (one-way only) for longer jobs.
+     • Waiting is rarely paid in practice — don't add anything for it.
+     • Hourly ("as directed") jobs are £15/hr — can't estimate without duration → null.
+     • Returns null when we can't responsibly guess (long-distance, hourly, EET). */
+function estimateXecFee(job){
+  if(!job)return null;
+  if(operatorOf(job)==='EET')return null; // EET fees vary widely — don't estimate
+  var notes=(job.notes||'').toLowerCase();
+  var pu=(job.pickup||'').toLowerCase();
+  var dr=(job.dropoff||'').toLowerCase();
+  // Hourly jobs — caller must enter the actual fee
+  if(/as directed|hourly|by the hour|hours hire|wedding/.test(notes+' '+(job.client||'').toLowerCase()))return null;
+  // Long-distance signals where we can't guess without mileage — caller enters fee
+  if(/braemar|fife arms|inverness|aberdeen|glasgow|st andrews|fort william|highland|edinburgh napier|lake district/.test(pu+' '+dr))return null;
+  // Mileage hint sometimes captured from booking app notes (e.g. Blacklane "13.7 mi")
+  var mile=notes.match(/(\d+(?:\.\d+)?)\s*mi\b/);
+  if(mile){
+    var m=parseFloat(mile[1]);
+    if(m<=20)return 18;
+    return Math.round((18+(m-20)*0.6)*100)/100;
+  }
+  return 18; // default short-job rate
+}
+
 /* Per-job stat tuple used by the Jobs tab: out-of-home commit minutes (jobCommitmentMin),
    on-job (engagement) minutes, fee+tip, and £/hr against commit time.
-   Rate is null when there's no fee yet — the UI shows "fee?" rather than a misleading £0/hr. */
+   Rate is null when there's no fee yet; estRate fills the gap using estimateXecFee. */
 function jobsPageJobStats(jobId, job){
   var jevs=JOBS_PAGE_EVENTS.filter(function(e){return e.job_id===jobId;});
   var commitMin=jobCommitmentMin(jobId, JOBS_PAGE_EVENTS);
@@ -1113,10 +1140,14 @@ function jobsPageJobStats(jobId, job){
   var tip=tipsOn()?(parseFloat(tipRaw)||0):0;
   var total=fee+tip;
   var feeEntered=(feeRaw!=null&&feeRaw!=='');
-  // Only compute a rate when we have BOTH commit time AND an actual fee — avoids
-  // the misleading "£0.00/hr in red" on jobs you haven't entered earnings for yet.
+  // Confirmed rate — only when we have commit time AND an actual entered fee.
   var rate=(commitMin>0&&total>0)?total/commitMin*60:null;
-  return {commitMin:commitMin, engMin:engMin, fee:fee, tip:tip, total:total, rate:rate, feeEntered:feeEntered};
+  // Estimated rate — fills the gap before the chauffeur statement arrives. Flagged in UI.
+  var feeEst=(!feeEntered)?estimateXecFee(job):null;
+  var totalEst=(feeEst!=null)?(feeEst+tip):null;
+  var rateEst=(feeEst!=null&&commitMin>0)?totalEst/commitMin*60:null;
+  return {commitMin:commitMin, engMin:engMin, fee:fee, tip:tip, total:total, rate:rate,
+          feeEntered:feeEntered, feeEst:feeEst, totalEst:totalEst, rateEst:rateEst};
 }
 
 function filterJobsPage(){
@@ -1144,33 +1175,50 @@ function renderJobsPage(jobs){
     var anyPartial=dayJobs.some(function(j){return JOB_COMPLETE_SET[j.job_id]==='partial'||JOB_COMPLETE_SET[j.job_id]==='complete';});
     var dayBorder=allComplete?'var(--green)':anyPartial?'var(--gold)':'var(--border)';
     // Day totals — OoH (sum of per-job commit), work (sum of engMin), £ and £/hr.
-    // Track whether ANY job that day has a fee entered — drives whether £/hr is shown
-    // or replaced with a "fees pending" note (avoids misleading £0/hr).
-    var dCommit=0, dWork=0, dFee=0, dTip=0, dFeesEntered=0, dJobsWithCommit=0;
+    // Tracks confirmed fees AND estimates so the rate is never blank when commit time exists.
+    var dCommit=0, dWork=0, dFee=0, dTip=0, dFeesEntered=0, dEstFee=0, dEstJobs=0;
     dayJobs.forEach(function(j){
       var st=jobsPageJobStats(j.job_id, j);
       dCommit+=st.commitMin; dWork+=st.engMin; dFee+=st.fee; dTip+=st.tip;
       if(st.feeEntered)dFeesEntered++;
-      if(st.commitMin>0)dJobsWithCommit++;
+      if(st.feeEst!=null){ dEstFee+=st.feeEst; dEstJobs++; }
     });
     var dTotal=dFee+dTip;
+    var dTotalWithEst=dTotal+dEstFee; // confirmed + estimated
     var dRate=(dCommit>0&&dTotal>0)?dTotal/dCommit*60:null;
+    var dRateEst=(dCommit>0&&dTotalWithEst>0)?dTotalWithEst/dCommit*60:null;
     var dRateColor=dRate==null?'var(--text3)':(dRate>=targetRate()?'var(--green)':'var(--red)');
-    var dPartial=(dFeesEntered>0&&dFeesEntered<dayJobs.length);
+    var dEstColor=dRateEst==null?'var(--text3)':(dRateEst>=targetRate()?'var(--green)':'var(--red)');
+    var dHasEst=(dEstJobs>0);
     html+='<div style="border:0.5px solid '+dayBorder+';border-radius:12px;margin-bottom:12px;overflow:hidden;">';
     html+='<div style="padding:10px 14px;background:var(--surface2);border-bottom:0.5px solid var(--border);">';
     html+='<div style="display:flex;justify-content:space-between;align-items:center;">';
     html+='<div style="font-size:12px;letter-spacing:1.5px;text-transform:uppercase;color:'+(allComplete?'var(--green)':anyPartial?'var(--gold)':'var(--text3)')+';font-weight:600;">'+dayKey+'</div>';
     html+='<div style="font-size:11px;color:var(--text3);">'+dayJobs.length+' job'+(dayJobs.length!==1?'s':'')+'</div>';
     html+='</div>';
-    if(dCommit>0||dTotal>0){
+    if(dCommit>0||dTotal>0||dHasEst){
+      // Build the £ figure: confirmed first, then "+ est £X" if any estimates fold in
+      var dFeeStr='';
+      if(dTotal>0){
+        dFeeStr='<span><span style="color:var(--text3);">£</span> '+money(dFee)+
+          (dTip>0?'<span style="color:var(--text3);"> +</span>'+money(dTip)+'<span style="color:var(--text3);"> tip</span>':'')+
+          (dHasEst?'<span style="color:var(--gold);"> + est £'+dEstFee.toFixed(2)+'</span>':'')+'</span>';
+      } else if(dHasEst){
+        dFeeStr='<span style="color:var(--gold);">est £'+dEstFee.toFixed(2)+'</span>';
+      }
+      // Build the £/hr figure: prefer confirmed, fall back to estimated, mark with ≈
+      var dRateStr='';
+      if(dRate!=null && !dHasEst){
+        dRateStr='<span style="color:'+dRateColor+';font-weight:600;">'+rate(dRate)+'/hr</span>';
+      } else if(dRateEst!=null){
+        dRateStr='<span style="color:'+dEstColor+';font-weight:600;">'+(dHasEst&&dTotal===0?'':'≈')+rate(dRateEst)+'/hr'+
+          (dHasEst?'<span style="color:var(--text3);font-weight:400;"> (incl. '+dEstJobs+' est'+(dEstJobs!==1?'s':'')+')</span>':'')+'</span>';
+      }
       html+='<div style="display:flex;gap:12px;margin-top:6px;font-size:11px;color:var(--text2);flex-wrap:wrap;">'+
         '<span><span style="color:var(--text3);">OoH</span> '+(dCommit>0?fmtMins(dCommit):'—')+'</span>'+
         '<span><span style="color:var(--text3);">Work</span> '+(dWork>0?fmtMins(dWork):'—')+'</span>'+
-        (dTotal>0?'<span><span style="color:var(--text3);">£</span> '+money(dFee)+(dTip>0?'<span style="color:var(--text3);"> +</span>'+money(dTip)+'<span style="color:var(--text3);"> tip</span>':'')+'</span>':'')+
-        (dRate!=null
-          ? '<span style="color:'+dRateColor+';font-weight:600;">'+rate(dRate)+'/hr'+(dPartial?'<span style="color:var(--text3);font-weight:400;"> (partial — '+(dayJobs.length-dFeesEntered)+' fee'+((dayJobs.length-dFeesEntered)!==1?'s':'')+' pending)</span>':'')+'</span>'
-          : '<span style="color:var(--gold);">fees pending</span>')+
+        dFeeStr+
+        dRateStr+
       '</div>';
     }
     html+='</div>';
@@ -1187,15 +1235,21 @@ function renderJobsPage(jobs){
       html+='<div style="flex:1;min-width:0;">'+
         '<div class="job-group-title">'+j.job_id+(isAct?' &middot; <span style="color:var(--gold)">Active</span>':'')+'</div>'+
         '<div class="job-group-meta">'+(j.client||'Unknown')+(j.job_time?' &middot; '+j.job_time:'')+'</div>';
-      if(st.commitMin>0||st.total>0){
+      if(st.commitMin>0||st.total>0||st.feeEst!=null){
+        var jEstColor=st.rateEst==null?'var(--text3)':(st.rateEst>=targetRate()?'var(--green)':'var(--red)');
+        var jFeeBit='';
+        if(st.fee>0){ jFeeBit='<span><span style="color:var(--text3);">£</span> '+money(st.fee)+'</span>'; }
+        else if(st.feeEst!=null){ jFeeBit='<span style="color:var(--gold);">est £'+st.feeEst.toFixed(0)+'</span>'; }
+        var jRateBit='';
+        if(st.rate!=null){ jRateBit='<span style="color:'+jRateColor+';font-weight:600;">'+rate(st.rate)+'/hr</span>'; }
+        else if(st.rateEst!=null){ jRateBit='<span style="color:'+jEstColor+';font-weight:600;">≈'+rate(st.rateEst)+'/hr</span>'; }
+        else if(st.commitMin>0){ jRateBit='<span style="color:var(--gold);">fee?</span>'; }
         html+='<div style="display:flex;gap:10px;margin-top:4px;font-size:11px;color:var(--text2);flex-wrap:wrap;">'+
           '<span><span style="color:var(--text3);">OoH</span> '+(st.commitMin>0?fmtMins(st.commitMin):'—')+'</span>'+
           '<span><span style="color:var(--text3);">Work</span> '+(st.engMin>0?fmtMins(st.engMin):'—')+'</span>'+
-          (st.fee>0?'<span><span style="color:var(--text3);">£</span> '+money(st.fee)+'</span>':'')+
+          jFeeBit+
           (st.tip>0?'<span><span style="color:var(--text3);">Tip</span> '+money(st.tip)+'</span>':'')+
-          (st.rate!=null
-            ? '<span style="color:'+jRateColor+';font-weight:600;">'+rate(st.rate)+'/hr</span>'
-            : (st.commitMin>0?'<span style="color:var(--gold);">fee?</span>':''))+
+          jRateBit+
         '</div>';
       }
       html+='</div>';
@@ -2372,7 +2426,7 @@ function exportCancellationsCSV(){
 
 init();
 /* Build stamp — bump on each change so the live version is verifiable in-app */
-var BUILD='2026-05-30g · jobs-page distinguishes "no fee yet" from £0/hr';
+var BUILD='2026-05-30h · auto-estimate £18 XEC fee until chauffeur statement reconciles';
 try{ var cps=document.querySelectorAll('.copyright'); for(var bi=0;bi<cps.length;bi++){ cps[bi].innerHTML+=' · <span style="color:var(--gold);">build '+BUILD+'</span>'; } }catch(e){}
 </script>
 </body>
