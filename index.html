@@ -1435,6 +1435,31 @@ function addExpenseFromForm(){
   var el=document.getElementById('review-content'); if(el)el.innerHTML=buildAnalysisHTML();
 }
 function deleteExpenseUI(id){ if(confirm('Delete this expense?')){ deleteExpense(id); var el=document.getElementById('review-content'); if(el)el.innerHTML=buildAnalysisHTML(); } }
+/* Target pay rate Lloyd wants every job to clear, measured against committed (out-of-home)
+   minutes per job. Stored in localStorage so it can be tuned without a code change. */
+function targetRate(){ var v=parseFloat(localStorage.getItem('chf_target_rate')); return (v>0)?v:15; }
+
+/* Per-job committed-time window (minutes).
+   Definition: earliest non-idle event for this job → latest non-idle event for this job.
+   "Idle" excluded: Own time start/end, Waiting period start/end.
+   If the job has no "Job complete" yet and the start was today → use NOW as the end (live). */
+function jobCommitmentMin(jobId,events){
+  var IDLE={'Own time start':1,'Own time end':1,'Waiting period start':1,'Waiting period end':1};
+  var jevs=(events||[]).filter(function(e){return e.job_id===jobId&&!IDLE[e.event_type];})
+    .map(function(e){return +new Date(e.timestamp);}).filter(function(t){return !isNaN(t);})
+    .sort(function(a,b){return a-b;});
+  if(jevs.length===0)return 0;
+  var startTs=jevs[0], endTs=jevs[jevs.length-1];
+  var hasComplete=(events||[]).some(function(e){return e.job_id===jobId&&e.event_type==='Job complete';});
+  if(!hasComplete){
+    var todayKey=new Date().toISOString().slice(0,10);
+    var startDay=new Date(startTs).toISOString().slice(0,10);
+    if(startDay===todayKey)endTs=Date.now();
+  }
+  var mins=(endTs-startTs)/60000;
+  return mins>0?mins:0;
+}
+
 function computeDayMetrics(jobs,events){
   var byJob={}; events.forEach(function(e){ if(!byJob[e.job_id])byJob[e.job_id]=[]; byJob[e.job_id].push(e); });
   var m={oohMin:0,engMin:0,pobMin:0,ownMin:0,waitMin:0,fees:0,tips:0,jobs:jobs.length};
@@ -1906,30 +1931,78 @@ function buildAnalysisHTML(){
     if(tb!==ta)return tb-ta;
     return (a.job_time||'')<(b.job_time||'')?-1:1;
   });
+  // Aggregate target-rate analysis across all jobs in scope
+  var TGT=targetRate(), tgtTotalCommitMin=0, tgtTotalFee=0, tgtJobsRated=0, tgtJobsHit=0;
+  var perJobCommit={}; // jobId → {mins, rate, gap}
+  sj.forEach(function(j){
+    var cm=jobCommitmentMin(j.job_id,scopeEvents);
+    var fee=(parseFloat(j.earnings)||0)+(TIPS?(parseFloat(j.tips)||0):0);
+    if(cm>0){
+      var r=fee/cm*60, gap=fee-(TGT*cm/60);
+      perJobCommit[j.job_id]={mins:cm,rate:r,gap:gap};
+      tgtTotalCommitMin+=cm; tgtTotalFee+=fee; tgtJobsRated++;
+      if(r>=TGT)tgtJobsHit++;
+    }
+  });
+  var tgtOverallRate=tgtTotalCommitMin>0?tgtTotalFee/tgtTotalCommitMin*60:null;
+  var tgtTotalGap=tgtTotalCommitMin>0?tgtTotalFee-(TGT*tgtTotalCommitMin/60):null;
+  var tgtPerHrShortfall=tgtOverallRate!=null?(tgtOverallRate-TGT):null;
+
+  // TARGET PAY-RATE card — primary decision-making signal
+  h+='<div class="section"><div class="section-label">Target Pay Rate · &pound;'+TGT.toFixed(0)+'/hr (committed time)</div>';
+  if(tgtOverallRate==null){
+    h+='<div style="background:var(--surface);border:0.5px solid var(--border2);border-radius:10px;padding:12px 14px;font-size:13px;color:var(--text3);">No commit-time data yet for this scope.</div>';
+  } else {
+    var hit=tgtOverallRate>=TGT;
+    var headColor=hit?'var(--green)':'var(--red)';
+    h+='<div style="background:var(--surface);border:0.5px solid '+headColor+';border-radius:10px;padding:14px;margin-bottom:8px;">'+
+      '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px;">'+
+        '<div><div style="font-size:11px;color:var(--text3);letter-spacing:1px;">ACHIEVING</div>'+
+          '<div style="font-size:22px;color:'+headColor+';font-weight:600;">'+rate(tgtOverallRate)+'/hr</div></div>'+
+        '<div style="text-align:right;"><div style="font-size:11px;color:var(--text3);letter-spacing:1px;">VS TARGET</div>'+
+          '<div style="font-size:18px;color:'+headColor+';font-weight:600;">'+(hit?'+':'')+'&pound;'+tgtPerHrShortfall.toFixed(2)+'/hr</div></div>'+
+      '</div>'+
+      '<div style="font-size:12px;color:var(--text3);border-top:0.5px solid var(--border);padding-top:8px;">'+
+        tgtJobsHit+' of '+tgtJobsRated+' jobs hit &pound;'+TGT.toFixed(0)+'/hr · '+
+        fmtMins(tgtTotalCommitMin)+' committed · '+
+        (tgtTotalGap>=0?'<span style="color:var(--green);">&pound;'+tgtTotalGap.toFixed(2)+' above target</span>':
+                       '<span style="color:var(--red);">&pound;'+Math.abs(tgtTotalGap).toFixed(2)+' short of target</span>')+
+      '</div>'+
+    '</div></div>';
+  }
+
   h+='<div class="section"><div class="section-label">Per-Job Breakdown ('+sj.length+')</div>';
   sj.forEach(function(job){
     var jev=scopeEvents.filter(function(e){return e.job_id===job.job_id;});
     var jm=computeDayMetrics([job],jev);
     var fee=parseFloat(job.earnings)||0, tip=TIPS?(parseFloat(job.tips)||0):0;
     var perHr=jm.engMin>0?fee/jm.engMin*60:null;
+    var commit=perJobCommit[job.job_id]||null;
     var pk=jev.filter(function(e){return e.event_type==='At passenger pickup';}).length;
     var dr=jev.filter(function(e){return e.event_type==='Passengers dropped off';}).length;
     var ok=pk>0&&dr>0&&jm.engMin>0;
     var op=operatorOf(job);
+    var tgtBadge='';
+    if(commit&&(fee+tip)>0){
+      var hit=commit.rate>=TGT;
+      tgtBadge=' <span style="font-size:10px;background:'+(hit?'var(--green)':'var(--red)')+';color:#1a1a1a;padding:2px 6px;border-radius:6px;font-weight:600;">'+(hit?'✓':'⌃')+' '+rate(commit.rate)+'/hr</span>';
+    }
     h+='<div onclick="analysisJobTap(\''+(job.job_date||'')+'\',\''+op+'\')" style="background:var(--surface);border:0.5px solid '+(ok?'var(--border2)':'var(--gold-dim)')+';border-radius:10px;padding:12px 14px;margin-bottom:6px;cursor:pointer;">'+
       '<div style="display:flex;justify-content:space-between;align-items:flex-start;">'+
         '<div style="flex:1;min-width:0;">'+
-          '<div style="font-size:15px;color:var(--gold);font-weight:600;">'+job.job_id+'<span style="font-size:11px;color:var(--text3);font-weight:400;"> · '+op+'</span>'+(isDayVerified(job.job_date)?' <span style="font-size:11px;color:var(--green);">✓</span>':'')+(ok?'':' <span style="font-size:11px;color:var(--gold);">⚠</span>')+'</div>'+
+          '<div style="font-size:15px;color:var(--gold);font-weight:600;">'+job.job_id+'<span style="font-size:11px;color:var(--text3);font-weight:400;"> · '+op+'</span>'+(isDayVerified(job.job_date)?' <span style="font-size:11px;color:var(--green);">✓</span>':'')+(ok?'':' <span style="font-size:11px;color:var(--gold);">⚠</span>')+tgtBadge+'</div>'+
           '<div style="font-size:11px;color:var(--text3);margin-top:2px;">'+formatJobDate(job.job_date)+(job.job_time?' · '+job.job_time.substring(0,5):'')+'</div>'+
           '<div style="font-size:11px;color:var(--text3);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+(job.pickup||'')+(job.dropoff?' → '+job.dropoff:'')+'</div>'+
         '</div>'+
         '<div style="text-align:right;flex-shrink:0;margin-left:10px;">'+
           ((fee||tip)?'<div style="font-size:15px;color:var(--green);font-weight:600;">'+(fee?money(fee):'<span style="color:var(--text3);">no fee</span>')+(tip?'<span style="font-size:10px;color:var(--text3);font-weight:400;"> +'+money(tip)+' tip</span>':'')+'</div>':'<div style="font-size:11px;color:var(--text3);">no fee/tip</div>')+
           (perHr!=null?'<div style="font-size:11px;color:var(--text3);margin-top:2px;">'+rate(perHr)+'/hr on job</div>':'')+
+          (commit?'<div style="font-size:11px;color:var(--text3);margin-top:1px;">'+rate(commit.rate)+'/hr OoH · '+(commit.gap>=0?'<span style="color:var(--green);">+&pound;'+commit.gap.toFixed(2)+'</span>':'<span style="color:var(--red);">&minus;&pound;'+Math.abs(commit.gap).toFixed(2)+'</span>')+'</div>':'')+
         '</div>'+
       '</div>'+
       '<div style="display:flex;gap:12px;margin-top:8px;font-size:11px;color:var(--text2);">'+
         '<span>On job '+(jm.engMin>0?fmtMins(jm.engMin):'—')+'</span>'+
+        (commit?'<span>Commit '+fmtMins(commit.mins)+'</span>':'')+
         (jm.ownMin>0?'<span style="color:var(--green);">Own '+fmtMins(jm.ownMin)+'</span>':'')+
         (jm.waitMin>0?'<span style="color:var(--red);">Wait '+fmtMins(jm.waitMin)+'</span>':'')+
       '</div>'+
@@ -2055,7 +2128,7 @@ function exportAnalysisCSV(){
 
 init();
 /* Build stamp — bump on each change so the live version is verifiable in-app */
-var BUILD='2026-05-30b · cancellations + live today + worst-day fix';
+var BUILD='2026-05-30c · target £15/hr + per-job commitment';
 try{ var cps=document.querySelectorAll('.copyright'); for(var bi=0;bi<cps.length;bi++){ cps[bi].innerHTML+=' · <span style="color:var(--gold);">build '+BUILD+'</span>'; } }catch(e){}
 </script>
 </body>
