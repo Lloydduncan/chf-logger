@@ -3,6 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta http-equiv="Cache-Control" content="no-cache, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="CHF Logger">
@@ -1865,7 +1868,7 @@ function buildAnalysisHTML(){
     var dj=byDate[d], dids={}; dj.forEach(function(j){dids[j.job_id]=1;});
     var dev=scopeEvents.filter(function(e){return dids[e.job_id];});
     var dm=computeDayMetrics(dj,dev);
-    if(dm.oohRateTip!=null)dayRates.push({date:d,rate:dm.oohRateTip});
+    if(dm.oohRateTip!=null&&dm.total>0)dayRates.push({date:d,rate:dm.oohRateTip});
   });
   if(dayRates.length>1){
     dayRates.sort(function(a,b){return b.rate-a.rate;});
@@ -2032,7 +2035,7 @@ function exportAnalysisCSV(){
 
 init();
 /* Build stamp — bump on each change so the live version is verifiable in-app */
-var BUILD='2026-05-28c · expenses, P&L, tip £/hr + trend';
+var BUILD='2026-05-30a · worst-day excludes £0 earnings + cache-control';
 try{ var cps=document.querySelectorAll('.copyright'); for(var bi=0;bi<cps.length;bi++){ cps[bi].innerHTML+=' · <span style="color:var(--gold);">build '+BUILD+'</span>'; } }catch(e){}
 </script>
 </body>
