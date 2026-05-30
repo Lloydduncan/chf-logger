@@ -534,7 +534,7 @@ function clearActiveJob(){
 async function loadJobs(){
   ALL_JOBS=[];
   try{
-    var r=await sbFetch('/rest/v1/jobs?driver_id=eq.'+DRIVER_ID+'&select=*&order=job_date.asc,job_time.asc&limit=60');
+    var r=await sbFetch('/rest/v1/jobs?driver_id=eq.'+DRIVER_ID+'&status=not.eq.cancelled&select=*&order=job_date.asc,job_time.asc&limit=60');
     if(r.ok&&r.data) ALL_JOBS=r.data;
   }catch(e){}
   renderTimeline(ALL_JOBS);
@@ -1043,7 +1043,7 @@ async function loadJobsPage(){
   var el=document.getElementById('jobs-page-list');
   el.innerHTML='<div class="log-empty">Loading...</div>';
   try{
-    var r=await sbFetch('/rest/v1/jobs?driver_id=eq.'+DRIVER_ID+'&select=*');
+    var r=await sbFetch('/rest/v1/jobs?driver_id=eq.'+DRIVER_ID+'&status=not.eq.cancelled&select=*');
     if(!r.ok||!r.data){el.innerHTML='<div class="log-empty">Could not load jobs</div>';return;}
     JOBS_PAGE_ALL=r.data.sort(function(a,b){
       var da=parseDateStr(a.job_date),db=parseDateStr(b.job_date);
@@ -1340,7 +1340,7 @@ async function loadWorkedDays(){
   if(!DRIVER_ID){el.innerHTML='';return;}
   try{
     // Fetch all jobs + event counts per job using two queries
-    var jobsR=await sbFetch('/rest/v1/jobs?driver_id=eq.'+DRIVER_ID+'&select=job_id,job_date,client&order=job_date.desc.nullslast&limit=200');
+    var jobsR=await sbFetch('/rest/v1/jobs?driver_id=eq.'+DRIVER_ID+'&status=not.eq.cancelled&select=job_id,job_date,client&order=job_date.desc.nullslast&limit=200');
     var evR=await sbFetch('/rest/v1/events?driver_id=eq.'+DRIVER_ID+'&select=job_id&limit=2000');
     if(!jobsR.ok||!evR.ok){el.innerHTML='<div class="log-empty">Could not load worked days</div>';return;}
 
@@ -1471,7 +1471,15 @@ function computeDayMetrics(jobs,events){
     if(e.event_type==='Left house'){ if(dayLH[d]==null||t<dayLH[d])dayLH[d]=t; }
     else if(e.event_type.indexOf('Arrived home')>=0){ if(dayAH[d]==null||t>dayAH[d])dayAH[d]=t; }
   });
-  Object.keys(dayLH).forEach(function(d){ if(dayAH[d]!=null){ var span=(dayAH[d]-dayLH[d])/60000; if(span>0&&span<=1440)m.oohMin+=span; } });
+  // Today is treated as in-progress: if Left house was logged but Arrived home hasn't been yet,
+  // use NOW as a provisional close so the day's stats appear live as jobs are completed.
+  var todayKey=new Date().toISOString().slice(0,10), nowMs=Date.now();
+  Object.keys(dayLH).forEach(function(d){
+    var endMs=dayAH[d]!=null?dayAH[d]:(d===todayKey?nowMs:null);
+    if(endMs==null)return;
+    var span=(endMs-dayLH[d])/60000;
+    if(span>0&&span<=1440)m.oohMin+=span;
+  });
   m.total=m.fees+m.tips;
   m.oohRate=m.oohMin>0?m.fees/m.oohMin*60:null;
   m.oohRateTip=m.oohMin>0?m.total/m.oohMin*60:null;
@@ -1539,7 +1547,7 @@ async function loadReviewV2(date){
   var el=document.getElementById('review-content');
   el.innerHTML='<div class="log-empty">Loading...</div>';
   try{
-    var jobsR=await sbFetch('/rest/v1/jobs?driver_id=eq.'+DRIVER_ID+'&job_date=eq.'+encodeURIComponent(date)+'&select=job_id,client,passenger_name,pickup,dropoff,earnings,tips');
+    var jobsR=await sbFetch('/rest/v1/jobs?driver_id=eq.'+DRIVER_ID+'&status=not.eq.cancelled&job_date=eq.'+encodeURIComponent(date)+'&select=job_id,client,passenger_name,pickup,dropoff,earnings,tips');
     if(!jobsR.ok||!jobsR.data||!jobsR.data.length){el.innerHTML='<div class="log-empty">No jobs found for this date</div>';return;}
     var dayJobs=jobsR.data.filter(function(j){return operatorOf(j)===REVIEW_COMPANY;});
     if(!dayJobs.length){el.innerHTML='<div class="log-empty">No '+REVIEW_COMPANY+' jobs on this date</div>';return;}
@@ -1661,7 +1669,7 @@ async function renderCompare(){
   var el=document.getElementById('review-content'); if(!el)return;
   el.innerHTML='<div class="log-empty">Loading comparison...</div>';
   try{
-    var jobsR=await sbFetch('/rest/v1/jobs?driver_id=eq.'+DRIVER_ID+'&select=job_id,job_date,client,earnings,tips&limit=500');
+    var jobsR=await sbFetch('/rest/v1/jobs?driver_id=eq.'+DRIVER_ID+'&status=not.eq.cancelled&select=job_id,job_date,client,earnings,tips&limit=500');
     var evR=await sbFetch('/rest/v1/events?driver_id=eq.'+DRIVER_ID+'&select=job_id,event_type,timestamp&limit=8000');
     if(!jobsR.ok){el.innerHTML='<div class="log-empty">Could not load comparison</div>';return;}
     var evCount={}; (evR.data||[]).forEach(function(e){evCount[e.job_id]=(evCount[e.job_id]||0)+1;});
@@ -1692,11 +1700,15 @@ async function renderAnalysis(){
   var el=document.getElementById('review-content'); if(!el)return;
   el.innerHTML='<div class="log-empty">Loading analysis...</div>';
   try{
-    var jobsR=await sbFetch('/rest/v1/jobs?driver_id=eq.'+DRIVER_ID+'&select=job_id,job_date,job_time,client,pickup,dropoff,earnings,tips&limit=1000');
+    var jobsR=await sbFetch('/rest/v1/jobs?driver_id=eq.'+DRIVER_ID+'&select=job_id,job_date,job_time,client,pickup,dropoff,earnings,tips,status,cancelled_at,cancelled_reason,cancelled_source&limit=1000');
     var evR=await sbFetch('/rest/v1/events?driver_id=eq.'+DRIVER_ID+'&select=job_id,event_type,timestamp&limit=10000');
     if(!jobsR.ok||!evR.ok){el.innerHTML='<div class="log-empty">Could not load analysis</div>';return;}
     var evCount={}; (evR.data||[]).forEach(function(e){evCount[e.job_id]=(evCount[e.job_id]||0)+1;});
-    ANALYSIS_CACHE={jobs:(jobsR.data||[]).filter(function(j){return evCount[j.job_id];}), events:(evR.data||[])};
+    // Active jobs in cache for normal stats; cancelled jobs kept separately for the cancellation log
+    var allJobs=(jobsR.data||[]);
+    var activeJobs=allJobs.filter(function(j){return j.status!=='cancelled' && evCount[j.job_id];});
+    var cancelledJobs=allJobs.filter(function(j){return j.status==='cancelled';});
+    ANALYSIS_CACHE={jobs:activeJobs, events:(evR.data||[]), cancelled:cancelledJobs};
     el.innerHTML=buildAnalysisHTML();
   }catch(e){el.innerHTML='<div class="log-empty">Could not load analysis</div>';}
 }
@@ -1746,8 +1758,16 @@ function buildAnalysisHTML(){
   var ownWait=M.ownMin+M.waitMin;
   var usablePct=ownWait>0?Math.round(M.ownMin/ownWait*100):0;
 
+  // Cancellation count for this period & company scope
+  var cancelledInPeriod=(ANALYSIS_CACHE.cancelled||[]).filter(function(j){
+    if(C!=='All'&&operatorOf(j)!==C)return false;
+    var pd=parseJobDate(j.job_date); if(!pd)return P==='all';
+    return pd>=ps&&pd<=pe;
+  });
+  var cancelRate=(M.jobs+cancelledInPeriod.length)>0 ? Math.round(cancelledInPeriod.length/(M.jobs+cancelledInPeriod.length)*100) : 0;
+
   h+='<div style="text-align:center;font-size:14px;color:var(--gold);font-weight:600;margin-bottom:2px;">'+(C==='All'?'All companies':C)+' · '+periodLabel(P)+'</div>';
-  h+='<div style="text-align:center;font-size:12px;color:var(--text3);margin-bottom:10px;">'+M.jobs+' job'+(M.jobs!==1?'s':'')+' over '+nDays+' day'+(nDays!==1?'s':'')+'</div>';
+  h+='<div style="text-align:center;font-size:12px;color:var(--text3);margin-bottom:10px;">'+M.jobs+' job'+(M.jobs!==1?'s':'')+' over '+nDays+' day'+(nDays!==1?'s':'')+(cancelledInPeriod.length?' · <span style="color:var(--red);">'+cancelledInPeriod.length+' cancelled</span> ('+cancelRate+'%)':'')+'</div>';
   h+='<button onclick="exportAnalysisCSV()" class="action-btn secondary" style="margin-bottom:4px;">&#x2B07; Export to CSV (accountant / tax)</button>';
   h+='<div style="font-size:11px;color:var(--text3);text-align:center;margin-bottom:1rem;">'+(TIPS?'Exports the current view incl tips — declaring tips is your choice; check with your accountant.':'Tips excluded from this export.')+'</div>';
 
@@ -2035,7 +2055,7 @@ function exportAnalysisCSV(){
 
 init();
 /* Build stamp — bump on each change so the live version is verifiable in-app */
-var BUILD='2026-05-30a · worst-day excludes £0 earnings + cache-control';
+var BUILD='2026-05-30b · cancellations + live today + worst-day fix';
 try{ var cps=document.querySelectorAll('.copyright'); for(var bi=0;bi<cps.length;bi++){ cps[bi].innerHTML+=' · <span style="color:var(--gold);">build '+BUILD+'</span>'; } }catch(e){}
 </script>
 </body>
