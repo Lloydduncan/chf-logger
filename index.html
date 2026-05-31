@@ -2949,6 +2949,54 @@ function generateDriverReport(){
   var trendNames=['week','month','90d','ytd','all'];
   var trends=trendNames.map(function(n){return computeWindowMetrics(windowFor(n));}).filter(function(t){return t!=null;});
 
+  // ----- Per-booker breakdown for the report (same EET + pre-21-May filter as in-app) -----
+  var BOOK_CUTOFF=new Date(2026,4,21);
+  var bookerStats={};
+  scopeJobs.filter(function(j){
+    if(operatorOf(j)==='EET')return false;
+    var pd=parseJobDate(j.job_date); if(!pd)return false;
+    return pd>=BOOK_CUTOFF;
+  }).forEach(function(j){
+    var key=j.booker||'__untagged';
+    if(!bookerStats[key])bookerStats[key]={key:key,jobs:0,engMin:0,commitMin:0,fees:0,tips:0,tipped:0,confirmed:0,estimated:0,unknown:0,estTotal:0};
+    var b=bookerStats[key];
+    var jevs=scopeEvents.filter(function(e){return e.job_id===j.job_id;});
+    var pu=jevs.filter(function(e){return e.event_type==='At passenger pickup';})[0];
+    var dr=jevs.filter(function(e){return e.event_type==='Passengers dropped off';})[0];
+    var jEng=(pu&&dr)?Math.max(0,(+new Date(dr.timestamp)-+new Date(pu.timestamp))/60000):0;
+    var jCom=jobCommitmentMin(j.job_id,scopeEvents);
+    b.jobs++; b.engMin+=jEng; b.commitMin+=jCom;
+    var feeRaw=j.earnings, feeEntered=(feeRaw!=null&&feeRaw!=='');
+    var fee=parseFloat(feeRaw)||0;
+    var tip=TIPS?(parseFloat(j.tips)||0):0;
+    if(tip>0)b.tipped++; b.tips+=tip;
+    if(feeEntered){ b.fees+=fee; b.confirmed++; }
+    else { var fe=estimateXecFee(j); if(fe!=null){ b.fees+=fe; b.estTotal+=fe; b.estimated++; } else { b.unknown++; } }
+  });
+  // Decorate with derived metrics + sort by £/hr OoH descending (most lucrative first)
+  var bookerRows=Object.keys(bookerStats).map(function(k){
+    var b=bookerStats[k];
+    b.total=b.fees+b.tips;
+    b.rate=b.commitMin>0?b.total/b.commitMin*60:null;
+    b.avgEng=b.jobs>0?b.engMin/b.jobs:0;
+    b.avgCom=b.jobs>0?b.commitMin/b.jobs:0;
+    b.unpaidMin=Math.max(0,b.commitMin-b.engMin);
+    b.unpaidPct=b.commitMin>0?Math.round(b.unpaidMin/b.commitMin*100):0;
+    b.avgFee=b.jobs>0?b.fees/b.jobs:0;
+    b.avgTip=b.jobs>0?b.tips/b.jobs:0;
+    b.tipFreq=b.jobs>0?Math.round(b.tipped/b.jobs*100):0;
+    b.hasEst=b.estimated>0;
+    return b;
+  }).sort(function(a,b){
+    if(a.rate==null&&b.rate==null)return 0;
+    if(a.rate==null)return 1;
+    if(b.rate==null)return -1;
+    return b.rate-a.rate;
+  });
+  var bestBooker=bookerRows.filter(function(b){return b.key!=='__untagged'&&b.rate!=null;})[0];
+  var worstBooker=bookerRows.filter(function(b){return b.key!=='__untagged'&&b.rate!=null;}).slice(-1)[0];
+  var topTipBooker=bookerRows.filter(function(b){return b.key!=='__untagged';}).slice().sort(function(a,b){return b.avgTip-a.avgTip;})[0];
+
   var money=function(x){return '£'+(x||0).toFixed(2);};
   var rateStr=function(x){return x!=null?'£'+x.toFixed(2):'—';};
   var operatorTitle=(C==='All')?'All operators':C;
@@ -3113,6 +3161,50 @@ barRow(driverName+' (excl. tips)',effRateExcTips,pfx+rateStr(effRateExcTips)+'/h
   '<div class="metric"><div class="metric-label">Pending Reconciliation</div><div class="metric-value warn">'+money(cEstTotal)+'</div><div class="metric-sub">'+cEstCount+' job'+(cEstCount!==1?'s':'')+' awaiting confirmation</div></div>'+
 '</div>'+
 
+// ===== CUSTOMER / BOOKING-SOURCE BREAKDOWN — ranked by effective £/hr =====
+(bookerRows.length>0?
+  '<h2>Customer / Booking-Source Analysis</h2>'+
+  '<p style="font-size:11px;color:#666;margin:0 0 8px;">Ranked best-to-worst by effective £/hr (out-of-home). Excludes EET and pre-21-May 2026 — same filter as the cancellation stats.</p>'+
+  ((bestBooker||worstBooker||topTipBooker)?
+    '<div class="narrative" style="margin:6px 0 14px;">'+
+      (bestBooker?'<strong style="color:'+bookerColor(bestBooker.key)+';">'+bookerLabel(bestBooker.key)+'</strong> is the most lucrative booking source — '+(bestBooker.hasEst?'≈':'')+rateStr(bestBooker.rate)+'/hr over '+bestBooker.jobs+' job'+(bestBooker.jobs!==1?'s':'')+'. ':'')+
+      (worstBooker&&bestBooker&&worstBooker.key!==bestBooker.key?'<strong style="color:'+bookerColor(worstBooker.key)+';">'+bookerLabel(worstBooker.key)+'</strong> is the weakest paying — '+(worstBooker.hasEst?'≈':'')+rateStr(worstBooker.rate)+'/hr. ':'')+
+      (topTipBooker&&topTipBooker.avgTip>0?'<strong style="color:'+bookerColor(topTipBooker.key)+';">'+bookerLabel(topTipBooker.key)+'</strong> generates the largest tips — '+money(topTipBooker.avgTip)+'/job ('+topTipBooker.tipFreq+'% tipped).':'')+
+    '</div>':'')+
+  '<table><thead><tr>'+
+    '<th>Rank</th>'+
+    '<th>Booking Source</th>'+
+    '<th>Jobs</th>'+
+    '<th>Avg pickup→drop</th>'+
+    '<th>Avg OoH</th>'+
+    '<th>Unpaid time</th>'+
+    '<th>Total earned</th>'+
+    '<th>Avg fee</th>'+
+    '<th>Avg tip · freq</th>'+
+    '<th>£/hr OoH</th>'+
+  '</tr></thead><tbody>'+
+    bookerRows.map(function(b,idx){
+      var rankBadge=b.key==='__untagged'?'<span style="color:#888;">—</span>':'<strong>'+(idx+1)+'</strong>';
+      var pfxB=b.hasEst?'≈':'';
+      var rateColor=b.rate==null?'#888':(b.rate>=TGT?'#198754':(b.rate>=MW?'#b8860b':'#b91c1c'));
+      var srcCell=b.key==='__untagged'?'<span style="color:#888;">Untagged</span>':'<span style="background:'+bookerColor(b.key)+';color:#1a1a1a;padding:2px 8px;border-radius:5px;font-weight:600;font-size:11px;">'+bookerLabel(b.key)+'</span>';
+      return '<tr>'+
+        '<td>'+rankBadge+'</td>'+
+        '<td>'+srcCell+'</td>'+
+        '<td>'+b.jobs+'</td>'+
+        '<td>'+(b.avgEng>0?fmtMins(b.avgEng):'—')+'</td>'+
+        '<td>'+(b.avgCom>0?fmtMins(b.avgCom):'—')+'</td>'+
+        '<td>'+b.unpaidPct+'% ('+fmtMins(b.unpaidMin)+')</td>'+
+        '<td>'+money(b.total)+(b.hasEst?' <span class="warn" style="font-size:10px;">('+b.estimated+' est)</span>':'')+'</td>'+
+        '<td>'+money(b.avgFee)+'</td>'+
+        '<td>'+(b.avgTip>0?money(b.avgTip):'—')+' <span style="color:#888;">· '+b.tipFreq+'%</span></td>'+
+        '<td style="color:'+rateColor+';font-weight:600;">'+(b.rate!=null?pfxB+rateStr(b.rate):'—')+'</td>'+
+      '</tr>';
+    }).join('')+
+  '</tbody></table>'+
+  '<p style="font-size:10px;color:#888;margin:4px 0 0;">Colour code on £/hr: <strong style="color:#198754;">green</strong> at or above £'+TGT.toFixed(0)+'/hr target, <strong style="color:#b8860b;">amber</strong> at or above UK min wage £'+MW.toFixed(2)+'/hr but below target, <strong style="color:#b91c1c;">red</strong> below min wage. ≈ marks a row that includes estimated fees not yet reconciled.</p>'
+:'')+
+
 '<h2>Tips Analysis</h2>'+
 '<div class="grid-4">'+
   '<div class="metric"><div class="metric-label">Total Tips</div><div class="metric-value">'+money(tipsTotalAll)+'</div><div class="metric-sub">'+tippedJobCount+' of '+scopeJobs.length+' jobs ('+tipFrequency.toFixed(0)+'% tipped)</div></div>'+
@@ -3208,7 +3300,7 @@ barRow(driverName+' (excl. tips)',effRateExcTips,pfx+rateStr(effRateExcTips)+'/h
 
 init();
 /* Build stamp — bump on each change so the live version is verifiable in-app */
-var BUILD='2026-05-31f · pending-fee inline editor + report filter chips';
+var BUILD='2026-05-31g · pending-fee editor + filter chips + customer/booker ranking in report';
 try{ var cps=document.querySelectorAll('.copyright'); for(var bi=0;bi<cps.length;bi++){ cps[bi].innerHTML+=' · <span style="color:var(--gold);">build '+BUILD+'</span>'; } }catch(e){}
 </script>
 </body>
