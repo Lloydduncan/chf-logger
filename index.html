@@ -1134,6 +1134,63 @@ function estimateXecFee(job){
   return 18; // default short-job rate (Edinburgh-area)
 }
 
+/* Known booker tags. Order matters — Lloyd's most-used apps appear first in the prompt.
+   Extending this list is safe; the analytics groups by exact string. */
+var BOOKER_OPTIONS=['blacklane','sixt','rolzo','limolane','limotak','xec_direct','2b_uk','baillie_gifford','sky_uk','oracle','other'];
+function bookerLabel(b){
+  if(!b)return 'untagged';
+  return ({blacklane:'Blacklane',sixt:'Sixt',rolzo:'Rolzo',limolane:'Limolane',limotak:'Limotak',
+          xec_direct:'XEC direct','2b_uk':'2B UK',baillie_gifford:'Baillie Gifford',sky_uk:'SKY UK',oracle:'Oracle',other:'Other'})[b]||b;
+}
+function bookerColor(b){
+  return ({blacklane:'#1a73e8',sixt:'#ff6a13',rolzo:'#7c3aed',limolane:'#10b981',limotak:'#f59e0b',
+          xec_direct:'#c9a84c','2b_uk':'#0ea5e9',baillie_gifford:'#06b6d4',sky_uk:'#3b82f6',oracle:'#dc2626',other:'#9ca3af'})[b]||'#888';
+}
+/* Prompt for the booking platform / customer source and save to jobs.booker.
+   Powers the Per-Booker analytics section. */
+async function setJobBooker(jobId){
+  if(!jobId)return;
+  var existing=null;
+  if(typeof JOBS_PAGE_ALL!=='undefined'){
+    var j=(JOBS_PAGE_ALL||[]).find(function(x){return x.job_id===jobId;});
+    if(j)existing=j.booker;
+  }
+  var opts=BOOKER_OPTIONS.map(function(b,i){return (i+1)+') '+bookerLabel(b);}).join('\n');
+  var v=prompt('Booking source for '+jobId+':\n\n'+opts+'\n\nEnter number 1-'+BOOKER_OPTIONS.length+' or type a custom tag (blank to clear):',
+    existing||'');
+  if(v==null)return;
+  v=v.trim().toLowerCase();
+  if(v===''){ /* clear */
+    var r=await sbFetch('/rest/v1/jobs?job_id=eq.'+jobId,'PATCH',{booker:null});
+    if(r.ok){ setStatus('logger-status','success',jobId+' booker cleared',3000); updateBookerInCache(jobId,null); return; }
+    alert('Could not clear booker.'); return;
+  }
+  // Number shorthand
+  var n=parseInt(v,10);
+  if(!isNaN(n)&&n>=1&&n<=BOOKER_OPTIONS.length){ v=BOOKER_OPTIONS[n-1]; }
+  // Otherwise accept whatever string Lloyd typed (allows new bookers without code changes)
+  var r=await sbFetch('/rest/v1/jobs?job_id=eq.'+jobId,'PATCH',{booker:v});
+  if(r.ok&&r.data&&r.data.length){
+    setStatus('logger-status','success',jobId+' tagged as '+bookerLabel(v),3000);
+    updateBookerInCache(jobId,v);
+  } else {
+    alert('Could not save booker for '+jobId+'.');
+  }
+}
+function updateBookerInCache(jobId,val){
+  if(typeof JOBS_PAGE_ALL!=='undefined'){
+    JOBS_PAGE_ALL=(JOBS_PAGE_ALL||[]).map(function(x){return x.job_id===jobId?Object.assign({},x,{booker:val}):x;});
+  }
+  if(typeof ALL_JOBS!=='undefined'){
+    ALL_JOBS=(ALL_JOBS||[]).map(function(x){return x.job_id===jobId?Object.assign({},x,{booker:val}):x;});
+  }
+  if(typeof ANALYSIS_CACHE!=='undefined'&&ANALYSIS_CACHE&&ANALYSIS_CACHE.jobs){
+    ANALYSIS_CACHE.jobs=ANALYSIS_CACHE.jobs.map(function(x){return x.job_id===jobId?Object.assign({},x,{booker:val}):x;});
+  }
+  if(typeof renderJobsPage==='function')renderJobsPage();
+  if(typeof renderTimeline==='function'&&typeof ALL_JOBS!=='undefined')renderTimeline(ALL_JOBS);
+}
+
 /* Prompt for the per-job distance in miles and save to jobs.distance_mi.
    Used to refine the £/hr estimate on long jobs before the chauffeur statement arrives. */
 async function setJobDistance(jobId){
@@ -1292,7 +1349,15 @@ function renderJobsPage(jobs){
         } else if(!st.feeEntered){
           jDistBit='<span onclick="event.stopPropagation();setJobDistance(\''+j.job_id+'\')" style="cursor:pointer;color:var(--gold);border:0.5px dashed var(--gold);border-radius:6px;padding:1px 6px;">+ dist</span>';
         }
+        // Booker — solid pill in the booker's colour if tagged, dashed gold "+ source" if not
+        var jBookerBit='';
+        if(j.booker){
+          jBookerBit='<span onclick="event.stopPropagation();setJobBooker(\''+j.job_id+'\')" style="cursor:pointer;background:'+bookerColor(j.booker)+';color:#1a1a1a;font-weight:600;padding:1px 7px;border-radius:6px;">'+bookerLabel(j.booker)+'</span>';
+        } else {
+          jBookerBit='<span onclick="event.stopPropagation();setJobBooker(\''+j.job_id+'\')" style="cursor:pointer;color:var(--gold);border:0.5px dashed var(--gold);border-radius:6px;padding:1px 6px;">+ source</span>';
+        }
         html+='<div style="display:flex;gap:10px;margin-top:4px;font-size:11px;color:var(--text2);flex-wrap:wrap;align-items:center;">'+
+          jBookerBit+
           '<span><span style="color:var(--text3);">OoH</span> '+(st.commitMin>0?fmtMins(st.commitMin):'—')+'</span>'+
           '<span><span style="color:var(--text3);">Work</span> '+(st.engMin>0?fmtMins(st.engMin):'—')+'</span>'+
           jDistBit+
@@ -2011,7 +2076,7 @@ async function renderAnalysis(){
   var el=document.getElementById('review-content'); if(!el)return;
   el.innerHTML='<div class="log-empty">Loading analysis...</div>';
   try{
-    var jobsR=await sbFetch('/rest/v1/jobs?driver_id=eq.'+DRIVER_ID+'&select=job_id,job_date,job_time,client,pickup,dropoff,earnings,tips,status,cancelled_at,cancelled_reason,cancelled_source,notes,distance_mi&limit=1000');
+    var jobsR=await sbFetch('/rest/v1/jobs?driver_id=eq.'+DRIVER_ID+'&select=job_id,job_date,job_time,client,pickup,dropoff,earnings,tips,status,cancelled_at,cancelled_reason,cancelled_source,notes,distance_mi,booker&limit=1000');
     var evR=await sbFetch('/rest/v1/events?driver_id=eq.'+DRIVER_ID+'&select=job_id,event_type,timestamp&limit=10000');
     if(!jobsR.ok||!evR.ok){el.innerHTML='<div class="log-empty">Could not load analysis</div>';return;}
     var evCount={}; (evR.data||[]).forEach(function(e){evCount[e.job_id]=(evCount[e.job_id]||0)+1;});
@@ -2370,6 +2435,89 @@ function buildAnalysisHTML(){
     });
     h+='</div>';
   }
+
+  // PER-BOOKER ANALYTICS — same rules as cancellation stats: exclude EET, exclude pre-21-May 2026
+  // so the comparison reflects current XEC operating reality only.
+  (function(){
+    var BOOK_CUTOFF=new Date(2026,4,21);
+    var qualifying=sj.filter(function(j){
+      if(operatorOf(j)==='EET')return false;
+      var pd=parseJobDate(j.job_date); if(!pd)return false;
+      return pd>=BOOK_CUTOFF;
+    });
+    if(!qualifying.length)return;
+    var groups={};
+    qualifying.forEach(function(j){
+      var key=j.booker||'__untagged';
+      if(!groups[key])groups[key]={jobs:[],engMin:0,commitMin:0,unpaidMin:0,fees:0,tips:0,tipped:0,feeEntered:0,estCount:0,estTotal:0};
+      var g=groups[key]; g.jobs.push(j);
+      var jevs=scopeEvents.filter(function(e){return e.job_id===j.job_id;});
+      var pu=jevs.filter(function(e){return e.event_type==='At passenger pickup';})[0];
+      var dr=jevs.filter(function(e){return e.event_type==='Passengers dropped off';})[0];
+      var jEng=(pu&&dr)?Math.max(0,(+new Date(dr.timestamp)-+new Date(pu.timestamp))/60000):0;
+      var jCom=jobCommitmentMin(j.job_id,scopeEvents);
+      g.engMin+=jEng; g.commitMin+=jCom; g.unpaidMin+=Math.max(0,jCom-jEng);
+      var feeRaw=j.earnings, feeEntered=(feeRaw!=null&&feeRaw!=='');
+      var fee=parseFloat(feeRaw)||0;
+      var tip=TIPS?(parseFloat(j.tips)||0):0;
+      if(tip>0){ g.tipped++; }
+      g.tips+=tip;
+      if(feeEntered){ g.fees+=fee; g.feeEntered++; }
+      else { var fe=estimateXecFee(j); if(fe!=null){ g.fees+=fe; g.estTotal+=fe; g.estCount++; } }
+    });
+    var keys=Object.keys(groups).sort(function(a,b){return groups[b].jobs.length-groups[a].jobs.length;});
+    h+='<div class="section"><div class="section-label">Per-Booker Breakdown (XEC only · from 21 May)</div>';
+    h+='<div style="font-size:11px;color:var(--text3);margin-bottom:8px;">Excludes EET and any jobs before 2026-05-21 to match the cancellation-stats filter.</div>';
+    // Header row
+    h+='<div style="background:var(--surface2);border-radius:8px;padding:8px 12px;font-size:10px;color:var(--text3);letter-spacing:1px;text-transform:uppercase;display:grid;grid-template-columns:1.4fr 0.6fr 1fr 0.9fr 0.9fr 1fr 0.9fr;gap:8px;margin-bottom:4px;">'+
+      '<div>Source</div><div>Jobs</div><div>Avg pickup→drop</div><div>Avg OoH</div><div>Unpaid %</div><div>Avg tip · freq</div><div>£/hr OoH</div></div>';
+    keys.forEach(function(k){
+      var g=groups[k]; var n=g.jobs.length;
+      var avgEng=n>0?g.engMin/n:0;
+      var avgCom=n>0?g.commitMin/n:0;
+      var unpaidPct=g.commitMin>0?Math.round(g.unpaidMin/g.commitMin*100):0;
+      var avgTipAll=n>0?g.tips/n:0;
+      var tipFreq=n>0?Math.round(g.tipped/n*100):0;
+      var totalInc=g.fees+g.tips;
+      var rateOoh=g.commitMin>0?totalInc/g.commitMin*60:null;
+      var pfxG=g.estCount>0?'≈':'';
+      var rateColor=rateOoh==null?'var(--text3)':(rateOoh>=targetRate()?'var(--green)':'var(--red)');
+      var bg=k==='__untagged'?'#2a2a2a':bookerColor(k);
+      var labelDot=k==='__untagged'
+        ? '<span style="color:var(--gold);">Untagged</span>'
+        : '<span style="background:'+bg+';color:#1a1a1a;font-weight:600;padding:2px 8px;border-radius:6px;font-size:11px;">'+bookerLabel(k)+'</span>';
+      h+='<div style="background:var(--surface);border:0.5px solid var(--border2);border-left:3px solid '+bg+';border-radius:8px;padding:10px 12px;margin-bottom:5px;display:grid;grid-template-columns:1.4fr 0.6fr 1fr 0.9fr 0.9fr 1fr 0.9fr;gap:8px;font-size:12px;color:var(--text);align-items:center;">'+
+        '<div>'+labelDot+'</div>'+
+        '<div>'+n+'</div>'+
+        '<div>'+(avgEng>0?fmtMins(avgEng):'—')+'</div>'+
+        '<div>'+(avgCom>0?fmtMins(avgCom):'—')+'</div>'+
+        '<div>'+unpaidPct+'%</div>'+
+        '<div>'+(avgTipAll>0?'£'+avgTipAll.toFixed(2):'—')+' <span style="color:var(--text3);">· '+tipFreq+'%</span></div>'+
+        '<div style="color:'+rateColor+';font-weight:600;">'+pfxG+(rateOoh!=null?'£'+rateOoh.toFixed(2):'—')+'</div>'+
+      '</div>';
+    });
+    // Insight line: highlight outliers — best tipper, longest unpaid, best rate
+    var ranked=keys.filter(function(k){return k!=='__untagged';}).map(function(k){
+      var g=groups[k], n=g.jobs.length;
+      return {
+        key:k, n:n,
+        avgTip: n>0?g.tips/n:0,
+        unpaidPct: g.commitMin>0?(g.unpaidMin/g.commitMin*100):0,
+        rate: g.commitMin>0?(g.fees+g.tips)/g.commitMin*60:null
+      };
+    });
+    if(ranked.length>1){
+      var bestTip=ranked.slice().sort(function(a,b){return b.avgTip-a.avgTip;})[0];
+      var worstUnpaid=ranked.slice().sort(function(a,b){return b.unpaidPct-a.unpaidPct;})[0];
+      var bestRate=ranked.filter(function(r){return r.rate!=null;}).sort(function(a,b){return b.rate-a.rate;})[0];
+      h+='<div style="font-size:11px;color:var(--text3);margin-top:8px;line-height:1.6;">'+
+        (bestTip?'<strong style="color:'+bookerColor(bestTip.key)+';">'+bookerLabel(bestTip.key)+'</strong> tips best (£'+bestTip.avgTip.toFixed(2)+'/job avg). ':'')+
+        (worstUnpaid?'<strong style="color:'+bookerColor(worstUnpaid.key)+';">'+bookerLabel(worstUnpaid.key)+'</strong> has highest unpaid-time share ('+Math.round(worstUnpaid.unpaidPct)+'%). ':'')+
+        (bestRate?'<strong style="color:'+bookerColor(bestRate.key)+';">'+bookerLabel(bestRate.key)+'</strong> tops £/hr ('+rate(bestRate.rate)+'/hr).':'')+
+      '</div>';
+    }
+    h+='</div>';
+  })();
 
   h+='<div class="section"><div class="section-label">Per-Job Breakdown ('+sj.length+')</div>';
   sj.forEach(function(job){
@@ -2969,7 +3117,7 @@ barRow(driverName+' (excl. tips)',effRateExcTips,pfx+rateStr(effRateExcTips)+'/h
 
 init();
 /* Build stamp — bump on each change so the live version is verifiable in-app */
-var BUILD='2026-05-31c · cancellation stats filter pre-21-May + EET out (XEC-only signal)';
+var BUILD='2026-05-31d · per-booker analytics + tag button + 8 jobs auto-tagged from screenshots';
 try{ var cps=document.querySelectorAll('.copyright'); for(var bi=0;bi<cps.length;bi++){ cps[bi].innerHTML+=' · <span style="color:var(--gold);">build '+BUILD+'</span>'; } }catch(e){}
 </script>
 </body>
