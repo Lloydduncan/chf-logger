@@ -2633,10 +2633,91 @@ function generateDriverReport(){
   var minutesPerPound=M.oohMin/Math.max(ratedTotal,0.01);
   var engMinPerPound=M.engMin/Math.max(ratedTotal,0.01);
 
+  // ----- Tip + fees-only breakdown (independent of TIPS toggle) -----
+  // Always compute tips so we can show with-vs-without side by side.
+  var feesOnly=0, tipsTotalAll=0, tippedJobCount=0;
+  scopeJobs.forEach(function(j){
+    var cm=jobCommitmentMin(j.job_id,scopeEvents);
+    if(cm<=0)return;
+    var feeRaw=j.earnings, feeEntered=(feeRaw!=null&&feeRaw!=='');
+    var feeAct=parseFloat(feeRaw)||0;
+    var tipAct=parseFloat(j.tips)||0;
+    if(tipAct>0){ tippedJobCount++; tipsTotalAll+=tipAct; }
+    if(feeEntered){ feesOnly+=feeAct; }
+    else { var fe=estimateXecFee(j); if(fe!=null) feesOnly+=fe; }
+  });
+  var ratedTotalIncTips=feesOnly+tipsTotalAll;
+  var ratedTotalExcTips=feesOnly;
+  var effRateIncTips=ratedMin>0?ratedTotalIncTips/ratedMin*60:null;
+  var effRateExcTips=ratedMin>0?ratedTotalExcTips/ratedMin*60:null;
+  var avgTipAllJobs=scopeJobs.length>0?tipsTotalAll/scopeJobs.length:0;
+  var avgTipPerTipped=tippedJobCount>0?tipsTotalAll/tippedJobCount:0;
+  var tipFrequency=scopeJobs.length>0?(tippedJobCount/scopeJobs.length*100):0;
+  // Tips needed to reach min wage / target — from current fees-only baseline
+  var tipsNeededForMW=Math.max(0,(MW*ratedMin/60)-feesOnly);
+  var tipsNeededForTGT=Math.max(0,(TGT*ratedMin/60)-feesOnly);
+  var tipShortfallMW=tipsNeededForMW-tipsTotalAll;
+  var tipShortfallTGT=tipsNeededForTGT-tipsTotalAll;
+
+  // ----- Avg per job ratios (used in the How Long to Earn table) -----
+  var avgFeePerJobInc=scopeJobs.length>0?ratedTotalIncTips/scopeJobs.length:0;
+  var avgFeePerJobExc=scopeJobs.length>0?ratedTotalExcTips/scopeJobs.length:0;
+  var avgOoHMinPerJob=scopeJobs.length>0?ratedMin/scopeJobs.length:0;
+
+  // ----- Target-rate comparison (mirrors min-wage block) -----
+  var tgtPctDelta=Math.round((effRate/TGT-1)*100);
+  var pctOfTGT=Math.round(ratedTotal/Math.max(tgtEarn,0.01)*100);
+
+  // ----- Trend windows: last week / this month / last 90d / YTD / all -----
+  // Each computed against ANALYSIS_CACHE so the figures are consistent across the report.
+  function windowFor(name){
+    var now=new Date();
+    if(name==='week'){ var d=new Date(now); var dow=(d.getDay()+6)%7; d.setDate(d.getDate()-dow); d.setHours(0,0,0,0); return {start:d,end:now,label:'This week'}; }
+    if(name==='month'){ return {start:new Date(now.getFullYear(),now.getMonth(),1),end:now,label:'This month'}; }
+    if(name==='90d'){ var d2=new Date(now); d2.setDate(d2.getDate()-90); d2.setHours(0,0,0,0); return {start:d2,end:now,label:'Last 90 days'}; }
+    if(name==='ytd'){ return {start:new Date(now.getFullYear(),0,1),end:now,label:'This year'}; }
+    return {start:new Date(0),end:now,label:'All time'};
+  }
+  function computeWindowMetrics(w){
+    var pe2=new Date(w.end); pe2.setHours(23,59,59,999);
+    var ws=w.start.getTime(), we=pe2.getTime();
+    var jobsW=ANALYSIS_CACHE.jobs.filter(function(j){
+      if(C!=='All'&&operatorOf(j)!==C)return false;
+      var pd=parseJobDate(j.job_date); if(!pd)return false;
+      var t=pd.getTime(); return t>=ws&&t<=we;
+    });
+    if(!jobsW.length)return null;
+    var sId={}; jobsW.forEach(function(j){sId[j.job_id]=1;});
+    var evW=ANALYSIS_CACHE.events.filter(function(e){return sId[e.job_id];});
+    var Mw=computeDayMetrics(jobsW,evW);
+    var rMin=0,fOnly=0,tTot=0,estC=0;
+    jobsW.forEach(function(j){
+      var cm=jobCommitmentMin(j.job_id,evW);
+      if(cm<=0)return;
+      var feeRaw=j.earnings, feeEntered=(feeRaw!=null&&feeRaw!=='');
+      var feeAct=parseFloat(feeRaw)||0, tipAct=parseFloat(j.tips)||0;
+      tTot+=tipAct;
+      if(feeEntered){ rMin+=cm; fOnly+=feeAct; }
+      else { var fe=estimateXecFee(j); if(fe!=null){ rMin+=cm; fOnly+=fe; estC++; } }
+    });
+    var rTotInc=fOnly+tTot, rTotExc=fOnly;
+    return {
+      label:w.label, jobs:jobsW.length, days:Object.keys(jobsW.reduce(function(o,j){if(j.job_date)o[j.job_date]=1;return o;},{})).length,
+      oohMin:Mw.oohMin, engMin:Mw.engMin, ratedMin:rMin,
+      feesOnly:fOnly, tips:tTot, totalInc:rTotInc, totalExc:rTotExc,
+      rateInc:rMin>0?rTotInc/rMin*60:null,
+      rateExc:rMin>0?rTotExc/rMin*60:null,
+      estCount:estC
+    };
+  }
+  var trendNames=['week','month','90d','ytd','all'];
+  var trends=trendNames.map(function(n){return computeWindowMetrics(windowFor(n));}).filter(function(t){return t!=null;});
+
   var money=function(x){return '£'+(x||0).toFixed(2);};
   var rateStr=function(x){return x!=null?'£'+x.toFixed(2):'—';};
   var operatorTitle=(C==='All')?'All operators':C;
   var periodTitle=periodLabel(P);
+  var driverName='Lloyd Duncan';
   var generatedAt=new Date().toLocaleString('en-GB',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'});
   var maxBar=Math.max(MW,TGT,effRate);
 
@@ -2723,15 +2804,16 @@ function generateDriverReport(){
 '<h2>Executive Summary</h2>'+
 '<div class="grid-4">'+
   '<div class="metric"><div class="metric-label">Time Invested</div><div class="metric-value">'+fmtMins(M.oohMin)+'</div><div class="metric-sub">'+dayEquiv.toFixed(1)+' working days at 8h/day</div></div>'+
-  '<div class="metric"><div class="metric-label">Total Earned</div><div class="metric-value">'+money(ratedTotal)+(hasEst?' <span class="warn">≈</span>':'')+'</div><div class="metric-sub">'+money(cConfTotal)+' confirmed + '+money(cEstTotal)+' est</div></div>'+
-  '<div class="metric"><div class="metric-label">Effective Rate</div><div class="metric-value '+(effRate>=MW?'good':'bad')+'">'+pfx+rateStr(effRate)+'</div><div class="metric-sub">over all out-of-home hours</div></div>'+
-  '<div class="metric"><div class="metric-label">Vs UK Min Wage</div><div class="metric-value '+(effRate>=MW?'good':'bad')+'">'+(effRate>=MW?'+':'')+'£'+(effRate-MW).toFixed(2)+'/hr</div><div class="metric-sub">'+(effRate>=MW?'above':'below')+' £'+MW.toFixed(2)+'/hr</div></div>'+
+  '<div class="metric"><div class="metric-label">Total Earned (incl. tips)</div><div class="metric-value">'+money(ratedTotalIncTips)+(hasEst?' <span class="warn">≈</span>':'')+'</div><div class="metric-sub">'+money(feesOnly)+' fees + '+money(tipsTotalAll)+' tips</div></div>'+
+  '<div class="metric"><div class="metric-label">Effective Rate</div><div class="metric-value '+(effRateIncTips>=MW?'good':'bad')+'">'+pfx+rateStr(effRateIncTips)+'</div><div class="metric-sub">incl. tips · excl. tips: '+pfx+rateStr(effRateExcTips)+'/hr</div></div>'+
+  '<div class="metric"><div class="metric-label">Vs UK Min Wage</div><div class="metric-value '+(effRateIncTips>=MW?'good':'bad')+'">'+(effRateIncTips>=MW?'+':'')+'£'+(effRateIncTips-MW).toFixed(2)+'/hr</div><div class="metric-sub">'+(effRateIncTips>=MW?'above':'below')+' £'+MW.toFixed(2)+'/hr · vs £'+TGT.toFixed(0)+' target: '+(effRateIncTips>=TGT?'+':'')+'£'+(effRateIncTips-TGT).toFixed(2)+'/hr</div></div>'+
 '</div>'+
 
 '<h2>Hourly Rate Comparison</h2>'+
 barRow('UK Min Wage','£'+MW.toFixed(2),'£'+MW.toFixed(2)+'/hr','#c9a84c')+
 barRow('CHF Target Rate','£'+TGT.toFixed(2),'£'+TGT.toFixed(2)+'/hr','#1f8a3b')+
-barRow(operatorTitle+' Achieved',effRate,pfx+rateStr(effRate)+'/hr',(effRate>=MW?'#198754':'#b91c1c'))+
+barRow(driverName+' (incl. tips)',effRateIncTips,pfx+rateStr(effRateIncTips)+'/hr',(effRateIncTips>=MW?'#198754':'#b91c1c'))+
+barRow(driverName+' (excl. tips)',effRateExcTips,pfx+rateStr(effRateExcTips)+'/hr',(effRateExcTips>=MW?'#198754':'#b91c1c'))+
 
 '<h2>Time Breakdown — Out of Home</h2>'+
 '<div class="grid-2"><div>'+
@@ -2748,13 +2830,33 @@ barRow(operatorTitle+' Achieved',effRate,pfx+rateStr(effRate)+'/hr',(effRate>=MW
   '</p>'+
 '</div></div>'+
 
-'<h2>How Long to Earn</h2>'+
-'<table><thead><tr><th>Goal</th><th>At this driver\'s rate ('+pfx+rateStr(effRate)+'/hr)</th><th>At UK min wage (£'+MW.toFixed(2)+'/hr)</th><th>At £'+TGT.toFixed(0)+'/hr target</th></tr></thead><tbody>'+
-  row('To earn £100', fmtMins(100/effRate*60), fmtMins(100/MW*60), fmtMins(100/TGT*60))+
-  row('To earn £500', fmtMins(500/effRate*60), fmtMins(500/MW*60), fmtMins(500/TGT*60))+
-  row('To earn £1,000', fmtMins(1000/effRate*60), fmtMins(1000/MW*60), fmtMins(1000/TGT*60))+
-  row('To earn ' + money(ratedTotal), fmtMins(ratedTotal/effRate*60)+' <em style="color:#888;">(actual)</em>', fmtMins(ratedTotal/MW*60), fmtMins(ratedTotal/TGT*60))+
+'<h2>How Long to Earn — Hours vs Number of Jobs</h2>'+
+'<p style="font-size:11px;color:#666;margin:0 0 8px;">Based on this driver\'s averages — '+money(avgFeePerJobInc)+'/job (incl. tips) or '+money(avgFeePerJobExc)+'/job (excl. tips), '+fmtMins(avgOoHMinPerJob)+' out-of-home per job.</p>'+
+'<table><thead><tr>'+
+  '<th>Goal</th>'+
+  '<th>OoH hours @ '+pfx+rateStr(effRateIncTips)+'/hr</th>'+
+  '<th>Avg jobs needed (incl. tips)</th>'+
+  '<th>Avg jobs needed (excl. tips)</th>'+
+  '<th>OoH at min wage</th>'+
+  '<th>OoH at £'+TGT.toFixed(0)+'/hr target</th>'+
+'</tr></thead><tbody>'+
+  (function(){
+    function goalRow(label,amt,actualTag){
+      var hOoH=fmtMins(amt/effRateIncTips*60);
+      var jobsInc=avgFeePerJobInc>0?Math.ceil(amt/avgFeePerJobInc):'—';
+      var jobsExc=avgFeePerJobExc>0?Math.ceil(amt/avgFeePerJobExc):'—';
+      var hMW=fmtMins(amt/MW*60);
+      var hTGT=fmtMins(amt/TGT*60);
+      return '<tr><td>'+label+(actualTag?' <em style="color:#888;">'+actualTag+'</em>':'')+'</td>'+
+        '<td>'+hOoH+'</td><td>'+jobsInc+'</td><td>'+jobsExc+'</td><td>'+hMW+'</td><td>'+hTGT+'</td></tr>';
+    }
+    return goalRow('To earn £100',100,'')+
+           goalRow('To earn £500',500,'')+
+           goalRow('To earn £1,000',1000,'')+
+           goalRow('To earn '+money(ratedTotalIncTips),ratedTotalIncTips,'(actual)');
+  })()+
 '</tbody></table>'+
+'<p style="font-size:10px;color:#888;margin:4px 0 0;">"Avg jobs needed" assumes constant earnings per job. Real workload will vary by job mix; longer jobs at higher fee may need fewer.</p>'+
 
 '<h2>Earnings Composition</h2>'+
 '<div class="grid-3">'+
@@ -2762,6 +2864,48 @@ barRow(operatorTitle+' Achieved',effRate,pfx+rateStr(effRate)+'/hr',(effRate>=MW
   '<div class="metric"><div class="metric-label">Confirmed Earnings</div><div class="metric-value">'+money(cConfTotal)+'</div><div class="metric-sub">from chauffeur statement</div></div>'+
   '<div class="metric"><div class="metric-label">Pending Reconciliation</div><div class="metric-value warn">'+money(cEstTotal)+'</div><div class="metric-sub">'+cEstCount+' job'+(cEstCount!==1?'s':'')+' awaiting confirmation</div></div>'+
 '</div>'+
+
+'<h2>Tips Analysis</h2>'+
+'<div class="grid-4">'+
+  '<div class="metric"><div class="metric-label">Total Tips</div><div class="metric-value">'+money(tipsTotalAll)+'</div><div class="metric-sub">'+tippedJobCount+' of '+scopeJobs.length+' jobs ('+tipFrequency.toFixed(0)+'% tipped)</div></div>'+
+  '<div class="metric"><div class="metric-label">Avg Tip (all jobs)</div><div class="metric-value">'+money(avgTipAllJobs)+'</div><div class="metric-sub">per job in scope, tipped or not</div></div>'+
+  '<div class="metric"><div class="metric-label">Avg Tip (when tipped)</div><div class="metric-value">'+money(avgTipPerTipped)+'</div><div class="metric-sub">on the '+tippedJobCount+' tipped job'+(tippedJobCount!==1?'s':'')+'</div></div>'+
+  '<div class="metric"><div class="metric-label">Tip Dependency</div><div class="metric-value">'+(ratedTotalIncTips>0?Math.round(tipsTotalAll/ratedTotalIncTips*100)+'%':'—')+'</div><div class="metric-sub">of total earnings</div></div>'+
+'</div>'+
+'<h3 style="margin-top:14px;">Tips Required to Hit Pay Benchmarks</h3>'+
+'<table><thead><tr><th>Benchmark</th><th>Total fees + tips needed</th><th>Already in tips</th><th>Further tips needed</th><th>Per-job tip required</th></tr></thead><tbody>'+
+  '<tr><td>UK Min Wage (£'+MW.toFixed(2)+'/hr)</td>'+
+    '<td>'+money(MW*ratedMin/60)+'</td>'+
+    '<td>'+money(tipsTotalAll)+'</td>'+
+    '<td class="'+(tipShortfallMW<=0?'good':'bad')+'">'+(tipShortfallMW<=0?money(0)+' (covered)':money(tipShortfallMW))+'</td>'+
+    '<td>'+(tipShortfallMW<=0?'—':money(tipShortfallMW/Math.max(scopeJobs.length,1))+'/job')+'</td></tr>'+
+  '<tr><td>CHF Target (£'+TGT.toFixed(0)+'/hr)</td>'+
+    '<td>'+money(TGT*ratedMin/60)+'</td>'+
+    '<td>'+money(tipsTotalAll)+'</td>'+
+    '<td class="'+(tipShortfallTGT<=0?'good':'bad')+'">'+(tipShortfallTGT<=0?money(0)+' (covered)':money(tipShortfallTGT))+'</td>'+
+    '<td>'+(tipShortfallTGT<=0?'—':money(tipShortfallTGT/Math.max(scopeJobs.length,1))+'/job')+'</td></tr>'+
+'</tbody></table>'+
+'<p style="font-size:10px;color:#888;margin:4px 0 0;">"Further tips needed" assumes fees stay at current level. Closing the gap requires either higher fees or the tip volume shown.</p>'+
+
+'<h2>Performance Trends</h2>'+
+'<table><thead><tr><th>Period</th><th>Jobs</th><th>Days</th><th>OoH time</th><th>Earnings (incl. tips)</th><th>£/hr (incl.)</th><th>£/hr (excl.)</th><th>vs Min Wage</th></tr></thead><tbody>'+
+  trends.map(function(t){
+    var mwd=t.rateInc!=null?(t.rateInc-MW):null;
+    var cls=mwd==null?'':(mwd>=0?'good':'bad');
+    var pfxT=t.estCount>0?'≈':'';
+    return '<tr>'+
+      '<td><strong>'+t.label+'</strong></td>'+
+      '<td>'+t.jobs+'</td>'+
+      '<td>'+t.days+'</td>'+
+      '<td>'+fmtMins(t.oohMin)+'</td>'+
+      '<td>'+money(t.totalInc)+(t.estCount>0?' <span class="warn">('+t.estCount+' est)</span>':'')+'</td>'+
+      '<td>'+(t.rateInc!=null?pfxT+rateStr(t.rateInc):'—')+'</td>'+
+      '<td>'+(t.rateExc!=null?pfxT+rateStr(t.rateExc):'—')+'</td>'+
+      '<td class="'+cls+'">'+(mwd!=null?(mwd>=0?'+':'')+'£'+mwd.toFixed(2)+'/hr':'—')+'</td>'+
+    '</tr>';
+  }).join('')+
+'</tbody></table>'+
+'<p style="font-size:10px;color:#888;margin:4px 0 0;">All trend rows reflect '+(C==='All'?'all operators':C)+'. Estimated fees (≈) are pre-reconciliation against the chauffeur statement.</p>'+
 
 (cancelledInPeriod.length>0?
 '<h2>Cancellations</h2>'+
@@ -2773,13 +2917,24 @@ barRow(operatorTitle+' Achieved',effRate,pfx+rateStr(effRate)+'/hr',(effRate>=MW
 
 '<h2>The Time-for-Money Equation</h2>'+
 '<div class="narrative">'+
-'For every <strong>£1</strong> earned, this driver invests:<br><br>'+
+'For every <strong>£1</strong> earned (incl. tips), this driver invests:<br><br>'+
 '&middot; <strong>'+minutesPerPound.toFixed(1)+' minutes</strong> of out-of-home time<br>'+
-'&middot; <strong>'+engMinPerPound.toFixed(1)+' minutes</strong> with a passenger<br><br>'+
-'Over '+periodTitle.toLowerCase()+', the same out-of-home hours paid at UK National Living Wage would have produced <strong>'+money(mwEarn)+'</strong>. '+
+'&middot; <strong>'+engMinPerPound.toFixed(1)+' minutes</strong> with a passenger<br>'+
+'&middot; ~<strong>'+(scopeJobs.length>0?(M.oohMin/scopeJobs.length).toFixed(1):'0')+' minutes</strong> per pound averaged over '+scopeJobs.length+' jobs<br><br>'+
+
+'<strong>Against UK National Living Wage (£'+MW.toFixed(2)+'/hr):</strong><br>'+
+'The same out-of-home hours at NLW would have produced <strong>'+money(mwEarn)+'</strong>. '+
 'The driver actually received <strong>'+money(ratedTotal)+'</strong>'+(hasEst?' (incl. estimates)':'')+
-' — that is <strong class="'+(ratedTotal>=mwEarn?'good':'bad')+'">'+pctOfMW+'%</strong> of min-wage equivalent.'+
-(ratedTotal<mwEarn?' <strong class="bad">Shortfall vs UK NLW: '+money(mwEarn-ratedTotal)+'</strong> for this period.':'')+
+' — <strong class="'+(ratedTotal>=mwEarn?'good':'bad')+'">'+pctOfMW+'%</strong> of min-wage equivalent.'+
+(ratedTotal<mwEarn?' <strong class="bad">Shortfall: '+money(mwEarn-ratedTotal)+'.</strong>':' <strong class="good">Surplus: '+money(ratedTotal-mwEarn)+'.</strong>')+
+'<br><br>'+
+
+'<strong>Against CHF Target (£'+TGT.toFixed(0)+'/hr):</strong><br>'+
+'The same out-of-home hours at the target rate would have produced <strong>'+money(tgtEarn)+'</strong>. '+
+'The driver actually received <strong>'+money(ratedTotal)+'</strong> — '+
+'<strong class="'+(ratedTotal>=tgtEarn?'good':'bad')+'">'+pctOfTGT+'%</strong> of target.'+
+(ratedTotal<tgtEarn?' <strong class="bad">Shortfall vs target: '+money(tgtEarn-ratedTotal)+'.</strong>':' <strong class="good">Above target by: '+money(ratedTotal-tgtEarn)+'.</strong>')+
+
 '</div>'+
 
 '<h2>Notes on Methodology</h2>'+
@@ -2805,7 +2960,7 @@ barRow(operatorTitle+' Achieved',effRate,pfx+rateStr(effRate)+'/hr',(effRate>=MW
 
 init();
 /* Build stamp — bump on each change so the live version is verifiable in-app */
-var BUILD='2026-05-31a · Today pill + UK min wage line + printable Driver Perspective Report';
+var BUILD='2026-05-31b · report adds trends + tips analysis + jobs/hours to earn + £15 equivalent';
 try{ var cps=document.querySelectorAll('.copyright'); for(var bi=0;bi<cps.length;bi++){ cps[bi].innerHTML+=' · <span style="color:var(--gold);">build '+BUILD+'</span>'; } }catch(e){}
 </script>
 </body>
