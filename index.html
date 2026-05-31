@@ -2018,7 +2018,16 @@ async function renderAnalysis(){
     // Active jobs in cache for normal stats; cancelled jobs kept separately for the cancellation log
     var allJobs=(jobsR.data||[]);
     var activeJobs=allJobs.filter(function(j){return j.status!=='cancelled' && evCount[j.job_id];});
-    var cancelledJobs=allJobs.filter(function(j){return j.status==='cancelled';});
+    // Cancellation filter: exclude EET (Lloyd is only tracking XEC cancellations) and anything
+    // before 2026-05-21 (those are historical bulk imports that would distort the XEC rate).
+    // Both rules surface in the Analysis header count, the Cancellations list & CSV, and the report.
+    var CANCEL_CUTOFF=new Date(2026,4,21); // 21 May 2026 (month is 0-indexed)
+    var cancelledJobs=allJobs.filter(function(j){
+      if(j.status!=='cancelled')return false;
+      if(operatorOf(j)==='EET')return false;
+      var pd=parseJobDate(j.job_date);
+      return pd!=null && pd>=CANCEL_CUTOFF;
+    });
     ANALYSIS_CACHE={jobs:activeJobs, events:(evR.data||[]), cancelled:cancelledJobs};
     el.innerHTML=buildAnalysisHTML();
   }catch(e){el.innerHTML='<div class="log-empty">Could not load analysis</div>';}
@@ -2960,7 +2969,7 @@ barRow(driverName+' (excl. tips)',effRateExcTips,pfx+rateStr(effRateExcTips)+'/h
 
 init();
 /* Build stamp — bump on each change so the live version is verifiable in-app */
-var BUILD='2026-05-31b · report adds trends + tips analysis + jobs/hours to earn + £15 equivalent';
+var BUILD='2026-05-31c · cancellation stats filter pre-21-May + EET out (XEC-only signal)';
 try{ var cps=document.querySelectorAll('.copyright'); for(var bi=0;bi<cps.length;bi++){ cps[bi].innerHTML+=' · <span style="color:var(--gold);">build '+BUILD+'</span>'; } }catch(e){}
 </script>
 </body>
