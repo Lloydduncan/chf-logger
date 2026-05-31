@@ -1135,15 +1135,18 @@ function estimateXecFee(job){
 }
 
 /* Known booker tags. Order matters — Lloyd's most-used apps appear first in the prompt.
-   Extending this list is safe; the analytics groups by exact string. */
-var BOOKER_OPTIONS=['blacklane','sixt','rolzo','limolane','limotak','xec_direct','2b_uk','baillie_gifford','sky_uk','oracle','other'];
+   Extending this list is safe; the analytics groups by exact string.
+   Little's uses the Affiliate PAD app (see reference_cds_client_field_heuristic). */
+var BOOKER_OPTIONS=['blacklane','sixt','rolzo','limolane','limotak','affiliate_pad','littles','xec_direct','2b_uk','baillie_gifford','sky_uk','oracle','other'];
 function bookerLabel(b){
   if(!b)return 'untagged';
   return ({blacklane:'Blacklane',sixt:'Sixt',rolzo:'Rolzo',limolane:'Limolane',limotak:'Limotak',
+          affiliate_pad:'Affiliate PAD',littles:"Little's (PAD)",
           xec_direct:'XEC direct','2b_uk':'2B UK',baillie_gifford:'Baillie Gifford',sky_uk:'SKY UK',oracle:'Oracle',other:'Other'})[b]||b;
 }
 function bookerColor(b){
   return ({blacklane:'#1a73e8',sixt:'#ff6a13',rolzo:'#7c3aed',limolane:'#10b981',limotak:'#f59e0b',
+          affiliate_pad:'#ec4899',littles:'#ec4899',
           xec_direct:'#c9a84c','2b_uk':'#0ea5e9',baillie_gifford:'#06b6d4',sky_uk:'#3b82f6',oracle:'#dc2626',other:'#9ca3af'})[b]||'#888';
 }
 /* Prompt for the booking platform / customer source and save to jobs.booker.
@@ -3117,7 +3120,7 @@ barRow(driverName+' (excl. tips)',effRateExcTips,pfx+rateStr(effRateExcTips)+'/h
 
 init();
 /* Build stamp — bump on each change so the live version is verifiable in-app */
-var BUILD='2026-05-31d · per-booker analytics + tag button + 8 jobs auto-tagged from screenshots';
+var BUILD='2026-05-31e · Littles/PAD added + driver cancellation 21 May 09:40 logged';
 try{ var cps=document.querySelectorAll('.copyright'); for(var bi=0;bi<cps.length;bi++){ cps[bi].innerHTML+=' · <span style="color:var(--gold);">build '+BUILD+'</span>'; } }catch(e){}
 </script>
 </body>
