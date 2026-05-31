@@ -2158,7 +2158,10 @@ function buildAnalysisHTML(){
   h+='<div style="text-align:center;font-size:14px;color:var(--gold);font-weight:600;margin-bottom:2px;">'+(C==='All'?'All companies':C)+' · '+periodLabel(P)+'</div>';
   h+='<div style="text-align:center;font-size:12px;color:var(--text3);margin-bottom:10px;">'+M.jobs+' job'+(M.jobs!==1?'s':'')+' over '+nDays+' day'+(nDays!==1?'s':'')+(cancelledInPeriod.length?' · <span style="color:var(--red);">'+cancelledInPeriod.length+' cancelled</span> ('+cancelRate+'%)':'')+'</div>';
   h+='<button onclick="exportAnalysisCSV()" class="action-btn secondary" style="margin-bottom:4px;">&#x2B07; Export to CSV (accountant / tax)</button>';
-  h+='<button onclick="generateDriverReport()" class="action-btn secondary" style="margin-bottom:4px;">&#x1F4C4; Driver Perspective Report (printable)</button>';
+  h+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:4px;">'+
+    '<button onclick="generateDriverReport()" class="action-btn secondary" style="margin:0;font-size:12px;">&#x1F4C4; Driver Report<br><span style="font-size:10px;color:var(--text3);font-weight:400;">for me / accountant</span></button>'+
+    '<button onclick="generateOperatorReport()" class="action-btn secondary" style="margin:0;font-size:12px;border:0.5px solid var(--gold);">&#x1F4CA; Operator Briefing<br><span style="font-size:10px;color:var(--text3);font-weight:400;">for '+(C==='All'?'operator':C)+' handover</span></button>'+
+  '</div>';
   h+='<div style="font-size:11px;color:var(--text3);text-align:center;margin-bottom:1rem;">'+(TIPS?'Exports the current view incl tips — declaring tips is your choice; check with your accountant.':'Tips excluded from this export.')+'</div>';
 
   function card(lbl,val,col,sub){return '<div class="stat-card"><div class="stat-label">'+lbl+'</div><div class="stat-value" style="font-size:18px;color:'+(col||'var(--text)')+';">'+val+'</div>'+(sub?'<div style="font-size:11px;color:var(--text3);margin-top:2px;">'+sub+'</div>':'')+'</div>';}
@@ -3689,12 +3692,13 @@ function generateOperatorReport(){
 '.toolbar { padding:14px; background:#1f3a52; color:#fff; text-align:center; margin:-20px -20px 16px; }'+
 '.toolbar button { background:#c9a84c; color:#1a1a1a; border:none; padding:9px 22px; border-radius:5px; font-size:13px; font-weight:600; cursor:pointer; margin:0 6px; font-family:inherit; }'+
 '.toolbar button.alt { background:transparent; color:#fff; border:1px solid #555; }'+
-'.arete-brand { margin-top:36px; padding:20px 22px; border-top:2px solid #c9a84c; background:linear-gradient(to right,#fafaf7,#fff); display:flex; justify-content:space-between; align-items:center; gap:24px; }'+
-'.arete-wordmark { display:inline-flex; align-items:baseline; gap:10px; font-family:Georgia,"Times New Roman",serif; }'+
-'.arete-glyph { color:#c9a84c; font-size:24px; line-height:1; }'+
-'.arete-name { letter-spacing:5px; font-size:18px; font-weight:600; color:#1a1a1a; }'+
-'.arete-tagline { font-size:11px; color:#666; font-style:italic; margin-top:4px; letter-spacing:0.5px; }'+
-'.arete-blurb { font-size:11px; color:#555; max-width:480px; text-align:right; line-height:1.7; }'+
+'.arete-brand { margin-top:36px; padding:22px 26px; border-top:3px solid #c9a84c; background:linear-gradient(135deg,#0d2540 0%,#112d4d 100%); color:#ece5d1; display:flex; justify-content:space-between; align-items:center; gap:26px; border-radius:4px; }'+
+'.arete-mark { display:flex; align-items:center; gap:14px; flex-shrink:0; }'+
+'.arete-text { display:flex; flex-direction:column; }'+
+'.arete-name { font-family:Georgia,"Times New Roman",serif; letter-spacing:6px; font-size:22px; font-weight:600; color:#ece5d1; line-height:1; }'+
+'.arete-tagline { font-size:10.5px; color:#c9a84c; letter-spacing:1.5px; margin-top:6px; font-style:italic; }'+
+'.arete-blurb { font-size:11px; color:#d8d3c4; max-width:460px; text-align:right; line-height:1.7; }'+
+'.arete-blurb strong { color:#ece5d1; }'+
 '.foot { font-size:10px; color:#888; text-align:center; margin-top:18px; padding-top:12px; border-top:1px solid #eee; }'+
 '@media print { .toolbar { display:none; } body { max-width:100%; padding:0; } h2 { page-break-after:avoid; } .metric,.narrative,.lens,.reveal,table,.arete-brand { page-break-inside:avoid; } }'+
 '</style></head><body>'+
@@ -3900,17 +3904,21 @@ barRow('Realised — incl. customer tips',effRateInc,pfx+rateStr(effRateInc)+'/h
 
 // ---- Arete brand block ----
 '<div class="arete-brand">'+
-  '<div>'+
-    '<div class="arete-wordmark">'+
-      '<span class="arete-glyph">&#9650;</span>'+
-      '<span class="arete-name">ARETE</span>'+
+  '<div class="arete-mark">'+
+    '<svg viewBox="0 0 100 100" width="72" height="72" aria-label="Arete">'+
+      '<polygon points="50,12 90,85 10,85" fill="#1f6a8c"/>'+
+      '<polygon points="50,12 90,85 50,85" fill="#144258"/>'+
+      '<path d="M 30 56 C 30 44 44 44 50 56 C 56 68 70 68 70 56 C 70 44 56 44 50 56 C 44 68 30 68 30 56 Z" stroke="#c9a84c" stroke-width="2.5" fill="none" stroke-linecap="round"/>'+
+    '</svg>'+
+    '<div class="arete-text">'+
+      '<div class="arete-name">ARETE</div>'+
+      '<div class="arete-tagline">Diagnostics &middot; Strategy &middot; Operational Intelligence</div>'+
     '</div>'+
-    '<div class="arete-tagline">Operational intelligence for the chauffeur industry</div>'+
   '</div>'+
   '<div class="arete-blurb">'+
     'This briefing was generated from a single driver\'s instrumented operations data using '+
-    '<strong>Chauffeur HandsFree</strong> &mdash; an Arete operational toolkit. Applied across a fleet, '+
-    'it produces continuous business intelligence at this resolution. '+
+    '<strong>Chauffeur HandsFree</strong> &mdash; one delivery of the Arete operational toolkit. '+
+    'Applied across a fleet it produces continuous business intelligence at this resolution. '+
     'Contact <strong>'+driverName+'</strong> for a strategic review of what this would surface for '+operatorTitle+'.'+
   '</div>'+
 '</div>'+
@@ -3928,7 +3936,7 @@ barRow('Realised — incl. customer tips',effRateInc,pfx+rateStr(effRateInc)+'/h
 
 init();
 /* Build stamp — bump on each change so the live version is verifiable in-app */
-var BUILD='2026-05-31h · audit-safe report (tips-off strips all tip refs) + biggest/smallest/per-customer tips + tip charts';
+var BUILD='2026-05-31i · two reports (Driver + Operator Briefing) · driver gets Net P&L + unpaid-at-NLW · operator gets utilisation, coverage grid, WTD, tip-sensitivity, Arete brand';
 try{ var cps=document.querySelectorAll('.copyright'); for(var bi=0;bi<cps.length;bi++){ cps[bi].innerHTML+=' · <span style="color:var(--gold);">build '+BUILD+'</span>'; } }catch(e){}
 </script>
 </body>
