@@ -2916,6 +2916,23 @@ function generateDriverReport(){
   var tipMonthsR=Object.keys(tipsByMonthR).sort();
   var tipClientsR=Object.keys(tipsByClientR).filter(function(c){return tipsByClientR[c].tips>0;}).sort(function(a,b){return tipsByClientR[b].tips-tipsByClientR[a].tips;});
 
+  // ----- Expenses + P&L (driver-side view of net income) -----
+  var expsR=expensesInPeriod();
+  var totalExp=0, expByCat={};
+  expsR.forEach(function(e){
+    var a=parseFloat(e.amount)||0; totalExp+=a;
+    expByCat[e.category]=(expByCat[e.category]||0)+a;
+  });
+  var incomeForPL=TIPS?ratedTotalIncTips:ratedTotalExcTips;
+  var netPL=incomeForPL-totalExp;
+  var netRatePerOoH=M.oohMin>0?(netPL/(M.oohMin/60)):null;
+  var expCatRows=Object.keys(expByCat).sort(function(a,b){return expByCat[b]-expByCat[a];});
+
+  // ----- Unpaid time valued at NLW (driver-side framing) -----
+  var unpaidMin=Math.max(0,M.oohMin-M.engMin);
+  var unpaidNLW=unpaidMin/60*MW;
+  var unpaidPctOfOoH=M.oohMin>0?Math.round(unpaidMin/M.oohMin*100):0;
+
   // ----- Avg per job ratios (used in the How Long to Earn table) -----
   var avgFeePerJobInc=scopeJobs.length>0?ratedTotalIncTips/scopeJobs.length:0;
   var avgFeePerJobExc=scopeJobs.length>0?ratedTotalExcTips/scopeJobs.length:0;
@@ -3140,6 +3157,31 @@ barRow('CHF Target Rate','£'+TGT.toFixed(2),'£'+TGT.toFixed(2)+'/hr','#1f8a3b'
     barRow(driverName+' (excl. tips)',effRateExcTips,pfx+rateStr(effRateExcTips)+'/hr',(effRateExcTips>=MW?'#198754':'#b91c1c'))
   : barRow(driverName,effRate,pfx+rateStr(effRate)+'/hr',(effRate>=MW?'#198754':'#b91c1c')))+
 
+// ===== NET INCOME & P&L (driver-side, after expenses) =====
+(expsR.length>0?
+  '<h2>Net Income After Expenses (P&amp;L)</h2>'+
+  '<div class="grid-4">'+
+    '<div class="metric"><div class="metric-label">Gross Income</div><div class="metric-value">'+money(incomeForPL)+(hasEst?' <span class="warn">≈</span>':'')+'</div><div class="metric-sub">'+(TIPS?'fees + tips':'fees only')+'</div></div>'+
+    '<div class="metric"><div class="metric-label">Total Expenses</div><div class="metric-value bad">−'+money(totalExp)+'</div><div class="metric-sub">'+expsR.length+' expense record'+(expsR.length!==1?'s':'')+'</div></div>'+
+    '<div class="metric"><div class="metric-label">Net Profit</div><div class="metric-value '+(netPL>=0?'good':'bad')+'">'+money(netPL)+'</div><div class="metric-sub">'+(incomeForPL>0?Math.round(netPL/incomeForPL*100)+'% margin':'—')+'</div></div>'+
+    '<div class="metric"><div class="metric-label">Net £/hr (OoH)</div><div class="metric-value '+(netRatePerOoH!=null&&netRatePerOoH>=MW?'good':(netRatePerOoH!=null?'bad':''))+'">'+(netRatePerOoH!=null?rateStr(netRatePerOoH):'—')+'</div><div class="metric-sub">after expenses, per out-of-home hour</div></div>'+
+  '</div>'+
+  '<h3 style="margin-top:14px;">Expense Breakdown</h3>'+
+  '<table><thead><tr><th>Category</th><th>Total</th><th>% of expenses</th><th>% of gross income</th></tr></thead><tbody>'+
+    expCatRows.map(function(c){
+      var v=expByCat[c];
+      var pctExp=totalExp>0?Math.round(v/totalExp*100):0;
+      var pctInc=incomeForPL>0?Math.round(v/incomeForPL*100):0;
+      return '<tr><td>'+c+'</td><td>'+money(v)+'</td><td>'+pctExp+'%</td><td>'+pctInc+'%</td></tr>';
+    }).join('')+
+    '<tr style="background:#fafafa;font-weight:600;"><td>TOTAL</td><td>'+money(totalExp)+'</td><td>100%</td><td>'+(incomeForPL>0?Math.round(totalExp/incomeForPL*100)+'%':'—')+'</td></tr>'+
+  '</tbody></table>'+
+  '<p style="font-size:10px;color:#888;margin:4px 0 0;">Expenses logged in the Chauffeur HandsFree expense tracker for this period. HMRC-mappable categories.</p>'
+:
+  '<h2>Net Income After Expenses</h2>'+
+  '<div class="narrative" style="font-size:12px;">No expenses logged for this period. Add expenses in the Analysis view to see a full profit-and-loss view of net take-home pay.</div>'
+)+
+
 '<h2>Time Breakdown — Out of Home</h2>'+
 '<div class="grid-2"><div>'+
   timeBar('With passenger',M.engMin,'#c9a84c')+
@@ -3154,6 +3196,17 @@ barRow('CHF Target Rate','£'+TGT.toFixed(2),'£'+TGT.toFixed(2)+'/hr','#1f8a3b'
     (waitM>0?' <strong class="bad">'+fmtMins(waitM)+'</strong> was recorded as standby / dead time: stuck near a pickup without usable alternatives.':'')+
   '</p>'+
 '</div></div>'+
+
+// ===== UNPAID TIME VALUED AT NLW =====
+(unpaidMin>0?
+  '<div class="narrative" style="border-left-color:#b91c1c;background:#fff5f5;margin-top:14px;">'+
+    '<strong>Unpaid labour at minimum wage:</strong> '+fmtMins(unpaidMin)+' ('+unpaidPctOfOoH+'% of out-of-home time) '+
+    'was spent driving to pickups, returning home, refuelling, cleaning, or waiting between jobs. '+
+    'At the UK National Living Wage of £'+MW.toFixed(2)+'/hr that represents '+
+    '<strong class="bad">'+money(unpaidNLW)+'</strong> of unbilled labour over this period — '+
+    'time the driver is unavailable to others but is not compensated by the operator or customer.'+
+  '</div>'
+:'')+
 
 '<h2>How Long to Earn — Hours vs Number of Jobs</h2>'+
 '<p style="font-size:11px;color:#666;margin:0 0 8px;">Based on this driver\'s averages — '+(TIPS?money(avgFeePerJobInc)+'/job (incl. tips) or '+money(avgFeePerJobExc)+'/job (excl. tips)':money(avgFeePerJobExc)+'/job')+', '+fmtMins(avgOoHMinPerJob)+' out-of-home per job.</p>'+
@@ -3393,6 +3446,476 @@ barRow('CHF Target Rate','£'+TGT.toFixed(2),'£'+TGT.toFixed(2)+'/hr','#1f8a3b'
 '</p>'+
 
 '<div class="foot">Generated by Chauffeur HandsFree &middot; '+generatedAt+'</div>'+
+
+'</body></html>';
+
+  var win=window.open('','_blank');
+  if(!win){ alert('Pop-up blocked. Allow pop-ups for this site and try again.'); return; }
+  win.document.open();
+  win.document.write(html);
+  win.document.close();
+}
+
+/* Operator Report — operational intelligence briefing for handover to the
+   operator (XEC etc). Same data, fundamentally different framing: a lens on
+   the operator's own business, not a complaint about driver pay. */
+function generateOperatorReport(){
+  if(!ANALYSIS_CACHE){ alert('Open Analysis first so the cache is populated.'); return; }
+  var C=ANALYSIS_COMPANY, P=ANALYSIS_PERIOD;
+  var ps=analysisPeriodStart(P), pe=new Date(); pe.setHours(23,59,59,999);
+  function inPeriod(j){ var pd=parseJobDate(j.job_date); if(!pd)return P==='all'; return pd>=ps&&pd<=pe; }
+  var periodJobs=ANALYSIS_CACHE.jobs.filter(inPeriod);
+  var scopeJobs=periodJobs.filter(function(j){return C==='All'||operatorOf(j)===C;});
+  var sIds={}; scopeJobs.forEach(function(j){sIds[j.job_id]=1;});
+  var scopeEvents=ANALYSIS_CACHE.events.filter(function(e){return sIds[e.job_id];});
+  var cancelledInPeriod=(ANALYSIS_CACHE.cancelled||[]).filter(function(j){
+    if(C!=='All'&&operatorOf(j)!==C)return false;
+    var pd=parseJobDate(j.job_date); if(!pd)return P==='all';
+    return pd>=ps&&pd<=pe;
+  });
+  if(!scopeJobs.length){ alert('No completed jobs in this period to report on.'); return; }
+
+  var TIPS=tipsOn(), TGT=targetRate(), MW=minWage();
+  var M=computeDayMetrics(scopeJobs,scopeEvents);
+  var datesS={}; scopeJobs.forEach(function(j){if(j.job_date)datesS[j.job_date]=true;});
+  var nDays=Object.keys(datesS).length;
+
+  // ---- Fee buckets, rates, tips (both views always computed) ----
+  var cConfMin=0,cConfTotal=0,cConfCount=0;
+  var cEstMin=0,cEstTotal=0,cEstCount=0;
+  var feesOnly=0, tipsTotalAll=0, tippedJobCount=0;
+  scopeJobs.forEach(function(j){
+    var cm=jobCommitmentMin(j.job_id,scopeEvents);
+    if(cm<=0)return;
+    var feeRaw=j.earnings, feeEntered=(feeRaw!=null&&feeRaw!=='');
+    var feeAct=parseFloat(feeRaw)||0;
+    var tipAct=parseFloat(j.tips)||0;
+    if(tipAct>0){tippedJobCount++; tipsTotalAll+=tipAct;}
+    var tipScoped=TIPS?tipAct:0;
+    if(feeEntered){cConfMin+=cm; cConfTotal+=feeAct+tipScoped; cConfCount++; feesOnly+=feeAct;}
+    else{var fe=estimateXecFee(j); if(fe!=null){cEstMin+=cm; cEstTotal+=fe+tipScoped; cEstCount++; feesOnly+=fe;}}
+  });
+  var ratedMin=cConfMin+cEstMin, ratedTotal=cConfTotal+cEstTotal;
+  var effRate=ratedMin>0?ratedTotal/ratedMin*60:null;
+  var hasEst=cEstCount>0, pfx=hasEst?'≈':'';
+  if(effRate==null){ alert('Not enough fee data to compute a rate yet.'); return; }
+  var ratedTotalInc=feesOnly+tipsTotalAll, ratedTotalExc=feesOnly;
+  var effRateInc=ratedMin>0?ratedTotalInc/ratedMin*60:null;
+  var effRateExc=ratedMin>0?ratedTotalExc/ratedMin*60:null;
+  var tipDepPct=ratedTotalInc>0?Math.round(tipsTotalAll/ratedTotalInc*100):0;
+  var tipFreqPct=scopeJobs.length>0?Math.round(tippedJobCount/scopeJobs.length*100):0;
+
+  // ---- Time / utilisation ----
+  var otherMin=Math.max(0,M.oohMin-M.engMin);
+  var ownM=Math.min(M.ownMin,otherMin), waitM=Math.min(M.waitMin,Math.max(0,otherMin-ownM));
+  var residMin=Math.max(0,otherMin-ownM-waitM);
+  var utilisationPct=M.oohMin>0?Math.round(M.engMin/M.oohMin*100):0;
+  var emptyRunPct=100-utilisationPct;
+
+  // ---- Cancellations by booker ----
+  var cancelByBooker={};
+  cancelledInPeriod.forEach(function(j){
+    var key=j.booker||j.client||'__untagged';
+    if(!cancelByBooker[key]) cancelByBooker[key]={key:key, count:0, lostEst:0};
+    cancelByBooker[key].count++;
+    cancelByBooker[key].lostEst+=18; // XEC short-job tariff baseline
+  });
+  var cancelBookerRows=Object.keys(cancelByBooker).sort(function(a,b){return cancelByBooker[b].count-cancelByBooker[a].count;}).map(function(k){return cancelByBooker[k];});
+  var totalBook=scopeJobs.length+cancelledInPeriod.length;
+  var cancelPct=totalBook>0?Math.round(cancelledInPeriod.length/totalBook*100):0;
+
+  // ---- Booker stats (operator-framed: shows them where THEIR booking flow wins/loses) ----
+  var BOOK_CUTOFF=new Date(2026,4,21);
+  var bookerStats={};
+  scopeJobs.filter(function(j){
+    if(operatorOf(j)==='EET')return false;
+    var pd=parseJobDate(j.job_date); if(!pd)return false;
+    return pd>=BOOK_CUTOFF;
+  }).forEach(function(j){
+    var key=j.booker||'__untagged';
+    if(!bookerStats[key])bookerStats[key]={key:key,jobs:0,engMin:0,commitMin:0,fees:0,tips:0,tipped:0,confirmed:0,estimated:0,unknown:0};
+    var b=bookerStats[key];
+    var jevs=scopeEvents.filter(function(e){return e.job_id===j.job_id;});
+    var pu=jevs.filter(function(e){return e.event_type==='At passenger pickup';})[0];
+    var dr=jevs.filter(function(e){return e.event_type==='Passengers dropped off';})[0];
+    var jEng=(pu&&dr)?Math.max(0,(+new Date(dr.timestamp)-+new Date(pu.timestamp))/60000):0;
+    var jCom=jobCommitmentMin(j.job_id,scopeEvents);
+    b.jobs++; b.engMin+=jEng; b.commitMin+=jCom;
+    var feeRaw=j.earnings, feeEntered=(feeRaw!=null&&feeRaw!=='');
+    var fee=parseFloat(feeRaw)||0;
+    var tipScoped=TIPS?(parseFloat(j.tips)||0):0;
+    if((parseFloat(j.tips)||0)>0)b.tipped++;
+    b.tips+=tipScoped;
+    if(feeEntered){b.fees+=fee; b.confirmed++;}
+    else{var fe=estimateXecFee(j); if(fe!=null){b.fees+=fe; b.estimated++;} else b.unknown++;}
+  });
+  var bookerRows=Object.keys(bookerStats).map(function(k){
+    var b=bookerStats[k];
+    b.total=b.fees+b.tips;
+    b.rate=b.commitMin>0?b.total/b.commitMin*60:null;
+    b.utilisationPct=b.commitMin>0?Math.round(b.engMin/b.commitMin*100):0;
+    b.unpaidPct=100-b.utilisationPct;
+    b.hasEst=b.estimated>0;
+    return b;
+  }).sort(function(a,b){
+    if(a.rate==null&&b.rate==null)return 0;
+    if(a.rate==null)return 1;
+    if(b.rate==null)return -1;
+    return b.rate-a.rate;
+  });
+
+  // ---- Coverage grid: pickups bucketed by day-of-week × 3-hour band ----
+  var DOW_LABELS=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+  var BANDS=['00–03','03–06','06–09','09–12','12–15','15–18','18–21','21–24'];
+  var grid=[];
+  for(var di=0;di<7;di++){grid.push([0,0,0,0,0,0,0,0]);}
+  scopeEvents.filter(function(e){return e.event_type==='At passenger pickup';}).forEach(function(e){
+    var dt=new Date(e.timestamp);
+    if(isNaN(+dt))return;
+    var dowJS=dt.getDay(); // JS: 0=Sun
+    var dow=(dowJS+6)%7;   // shift to: 0=Mon, 6=Sun
+    var band=Math.min(7,Math.floor(dt.getHours()/3));
+    grid[dow][band]++;
+  });
+  var maxCell=0, totalPickups=0;
+  grid.forEach(function(r){r.forEach(function(v){if(v>maxCell)maxCell=v; totalPickups+=v;});});
+
+  // ---- WTD snapshot ----
+  var dayOoH={};
+  Object.keys(datesS).forEach(function(d){
+    var dayJobs=scopeJobs.filter(function(j){return j.job_date===d;});
+    var dayJobIds={}; dayJobs.forEach(function(j){dayJobIds[j.job_id]=1;});
+    var dayEvs=scopeEvents.filter(function(e){return dayJobIds[e.job_id];});
+    var lefts=dayEvs.filter(function(e){return e.event_type==='Left house';});
+    var arrs=dayEvs.filter(function(e){return e.event_type==='Arrived home';});
+    if(lefts.length&&arrs.length){
+      var first=Math.min.apply(null,lefts.map(function(e){return +new Date(e.timestamp);}));
+      var last=Math.max.apply(null,arrs.map(function(e){return +new Date(e.timestamp);}));
+      dayOoH[d]=Math.min(24*60,(last-first)/60000);
+    }
+  });
+  var dayOoHSorted=Object.keys(dayOoH).sort(function(a,b){return parseJobDate(a)-parseJobDate(b);});
+  var ohValues=dayOoHSorted.map(function(d){return dayOoH[d];});
+  var longest=ohValues.length?Math.max.apply(null,ohValues):0;
+  var longestDay=ohValues.length?dayOoHSorted[ohValues.indexOf(longest)]:null;
+  var over10h=ohValues.filter(function(v){return v>600;}).length;
+  var over12h=ohValues.filter(function(v){return v>720;}).length;
+  var backToBack=0;
+  for(var bi=1;bi<dayOoHSorted.length;bi++){
+    var prevD=parseJobDate(dayOoHSorted[bi-1]), currD=parseJobDate(dayOoHSorted[bi]);
+    var diffDays=Math.round((currD-prevD)/86400000);
+    if(diffDays===1 && dayOoH[dayOoHSorted[bi-1]]>600 && dayOoH[dayOoHSorted[bi]]>600) backToBack++;
+  }
+  var wtdConcern=(over10h>=3||over12h>=1||backToBack>=2);
+
+  // ---- Tip-dependency sensitivity (always shown, regardless of toggle) ----
+  var rateGap=(effRateInc!=null&&effRateExc!=null)?(effRateInc-effRateExc):null;
+  var pctOfIncomeFromTips=ratedTotalInc>0?Math.round(tipsTotalAll/ratedTotalInc*100):0;
+
+  // ---- Helpers ----
+  var money=function(x){return '£'+(x||0).toFixed(2);};
+  var rateStr=function(x){return x!=null?'£'+x.toFixed(2):'—';};
+  var operatorTitle=(C==='All')?'All operators':C;
+  var periodTitle=periodLabel(P);
+  var driverName='Lloyd Duncan';
+  var generatedAt=new Date().toLocaleString('en-GB',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'});
+  var maxBar=Math.max(MW,TGT,effRateInc||0,effRate||0);
+  function barRow(label,val,valStr,color){
+    var pct=Math.min(100,(val||0)/maxBar*100);
+    return '<div class="bar-row"><div class="bar-label">'+label+'</div>'+
+      '<div class="bar-track"><div class="bar-fill" style="background:'+color+';width:'+pct.toFixed(1)+'%;"></div></div>'+
+      '<div class="bar-value">'+valStr+'</div></div>';
+  }
+  function pctOf(part,whole){ return whole>0?Math.round(part/whole*100):0; }
+  function timeBar(label,mins,color){
+    var pct=M.oohMin>0?(mins/M.oohMin*100):0;
+    return '<div class="bar-row"><div class="bar-label"><span class="dot" style="background:'+color+';"></span>'+label+'</div>'+
+      '<div class="bar-track"><div class="bar-fill" style="background:'+color+';width:'+pct.toFixed(1)+'%;"></div></div>'+
+      '<div class="bar-value">'+fmtMins(mins)+' ('+Math.round(pct)+'%)</div></div>';
+  }
+  function cellShade(v){
+    if(v===0)return '#fafafa';
+    var intensity=maxCell>0?Math.min(1,v/maxCell):0;
+    var alpha=Math.max(0.18,intensity);
+    return 'rgba(201,168,76,'+alpha.toFixed(2)+')';
+  }
+  function fmtDate(d){
+    var dt=parseJobDate(d); if(!dt)return d;
+    return dt.toLocaleDateString('en-GB',{weekday:'short',day:'2-digit',month:'short'});
+  }
+
+  var html=
+'<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">'+
+'<meta name="viewport" content="width=device-width,initial-scale=1">'+
+'<title>Operational Intelligence Briefing — '+operatorTitle+' · '+periodTitle+'</title>'+
+'<style>'+
+'@page { size:A4; margin:14mm; }'+
+'* { box-sizing:border-box; }'+
+'body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif; color:#1a1a1a; background:#fff; max-width:900px; margin:0 auto; padding:20px; line-height:1.5; font-size:13px; }'+
+'h1 { font-size:24px; font-weight:600; margin:0 0 4px; color:#1a1a1a; letter-spacing:0.3px; }'+
+'h2 { font-size:13px; font-weight:600; margin:22px 0 10px; color:#1a1a1a; padding-bottom:4px; border-bottom:1px solid #ddd; letter-spacing:1.5px; text-transform:uppercase; }'+
+'h3 { font-size:12px; font-weight:600; margin:8px 0 4px; color:#555; }'+
+'.header { display:flex; justify-content:space-between; align-items:flex-end; padding-bottom:14px; border-bottom:2px solid #1f3a52; margin-bottom:16px; }'+
+'.header-left { flex:1; }'+
+'.header-right { text-align:right; font-size:11px; color:#666; line-height:1.6; }'+
+'.subtitle { font-size:14px; color:#666; margin-top:4px; }'+
+'.kicker { font-size:10px; color:#1f3a52; letter-spacing:2.5px; text-transform:uppercase; font-weight:700; margin-bottom:6px; }'+
+'.grid-2 { display:grid; grid-template-columns:1fr 1fr; gap:14px; }'+
+'.grid-3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; }'+
+'.grid-4 { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; }'+
+'.metric { border:1px solid #ddd; border-radius:6px; padding:10px 12px; background:#fafafa; }'+
+'.metric-label { font-size:9px; color:#888; letter-spacing:1.2px; text-transform:uppercase; margin-bottom:3px; font-weight:600; }'+
+'.metric-value { font-size:20px; font-weight:600; color:#1a1a1a; line-height:1.15; }'+
+'.metric-sub { font-size:10px; color:#888; margin-top:3px; }'+
+'.good { color:#198754; } .bad { color:#b91c1c; } .warn { color:#b8860b; } .accent { color:#1f3a52; }'+
+'.narrative { background:#f4f7fa; border-left:4px solid #1f3a52; padding:14px 18px; margin:14px 0; font-size:13px; line-height:1.7; }'+
+'.lens { background:#fff8e6; border-left:4px solid #c9a84c; padding:14px 18px; margin:14px 0; font-size:13px; line-height:1.7; }'+
+'.bar-row { display:flex; align-items:center; gap:12px; margin:6px 0; font-size:12px; }'+
+'.bar-label { width:170px; flex-shrink:0; color:#333; }'+
+'.bar-track { flex:1; height:18px; background:#eee; border-radius:4px; overflow:hidden; }'+
+'.bar-fill { height:100%; }'+
+'.bar-value { width:120px; text-align:right; font-weight:600; font-size:12px; flex-shrink:0; color:#1a1a1a; }'+
+'.dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:6px; vertical-align:middle; }'+
+'table { width:100%; border-collapse:collapse; font-size:12px; margin:4px 0; }'+
+'th { text-align:left; padding:7px 8px; background:#f0f0f0; font-weight:600; border-bottom:1px solid #ccc; font-size:11px; letter-spacing:0.5px; }'+
+'td { padding:6px 8px; border-bottom:1px solid #eee; }'+
+'.coverage { width:100%; border-collapse:collapse; font-size:11px; margin:8px 0; }'+
+'.coverage th { background:#f8f8f8; color:#333; text-align:center; padding:5px 4px; font-size:10px; }'+
+'.coverage td { text-align:center; padding:6px 4px; border:1px solid #fff; font-weight:600; }'+
+'.coverage td.label { background:#1f3a52; color:#fff; text-align:left; padding-left:8px; font-weight:600; }'+
+'.reveal { background:#fafaf7; border:1px solid #e0d9c4; padding:16px 20px; margin:16px 0; border-radius:6px; }'+
+'.reveal h3 { margin-top:0; color:#1f3a52; font-size:13px; letter-spacing:1px; text-transform:uppercase; }'+
+'.reveal ul { margin:6px 0 0; padding-left:18px; line-height:1.8; font-size:12px; color:#333; }'+
+'.toolbar { padding:14px; background:#1f3a52; color:#fff; text-align:center; margin:-20px -20px 16px; }'+
+'.toolbar button { background:#c9a84c; color:#1a1a1a; border:none; padding:9px 22px; border-radius:5px; font-size:13px; font-weight:600; cursor:pointer; margin:0 6px; font-family:inherit; }'+
+'.toolbar button.alt { background:transparent; color:#fff; border:1px solid #555; }'+
+'.arete-brand { margin-top:36px; padding:20px 22px; border-top:2px solid #c9a84c; background:linear-gradient(to right,#fafaf7,#fff); display:flex; justify-content:space-between; align-items:center; gap:24px; }'+
+'.arete-wordmark { display:inline-flex; align-items:baseline; gap:10px; font-family:Georgia,"Times New Roman",serif; }'+
+'.arete-glyph { color:#c9a84c; font-size:24px; line-height:1; }'+
+'.arete-name { letter-spacing:5px; font-size:18px; font-weight:600; color:#1a1a1a; }'+
+'.arete-tagline { font-size:11px; color:#666; font-style:italic; margin-top:4px; letter-spacing:0.5px; }'+
+'.arete-blurb { font-size:11px; color:#555; max-width:480px; text-align:right; line-height:1.7; }'+
+'.foot { font-size:10px; color:#888; text-align:center; margin-top:18px; padding-top:12px; border-top:1px solid #eee; }'+
+'@media print { .toolbar { display:none; } body { max-width:100%; padding:0; } h2 { page-break-after:avoid; } .metric,.narrative,.lens,.reveal,table,.arete-brand { page-break-inside:avoid; } }'+
+'</style></head><body>'+
+
+'<div class="toolbar">'+
+'<button onclick="window.print()">&#x1F5A8; Print</button>'+
+'<button class="alt" onclick="window.close()">Close</button>'+
+'</div>'+
+
+'<div class="header"><div class="header-left">'+
+'<div class="kicker">Operational Intelligence Briefing</div>'+
+'<h1>'+operatorTitle+' &mdash; Time-Value Analysis</h1>'+
+'<div class="subtitle">'+periodTitle+' &middot; one-driver pilot dataset</div>'+
+'</div><div class="header-right">'+
+'Source driver: <strong>'+driverName+'</strong><br>'+
+'Generated: '+generatedAt+'<br>'+
+'Scope: '+scopeJobs.length+' jobs across '+nDays+' day'+(nDays!==1?'s':'')+
+'</div></div>'+
+
+// ---- Filter chips ----
+'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;font-size:11px;">'+
+  '<span style="background:#1f3a52;color:#fff;padding:4px 10px;border-radius:14px;">Operator: <strong>'+operatorTitle+'</strong></span>'+
+  '<span style="background:#1f3a52;color:#fff;padding:4px 10px;border-radius:14px;">Period: <strong>'+periodTitle+'</strong></span>'+
+  '<span style="background:#1f3a52;color:#fff;padding:4px 10px;border-radius:14px;">Tips view: <strong>'+(TIPS?'included':'excluded')+'</strong></span>'+
+  '<span style="background:#fff8e6;color:#1a1a1a;padding:4px 10px;border-radius:14px;border:1px solid #c9a84c;">Target benchmark: <strong>&pound;'+TGT.toFixed(0)+'/hr</strong></span>'+
+  '<span style="background:#fff8e6;color:#1a1a1a;padding:4px 10px;border-radius:14px;border:1px solid #c9a84c;">UK NLW: <strong>&pound;'+MW.toFixed(2)+'/hr</strong></span>'+
+'</div>'+
+
+// ---- Opening lens-framing paragraph ----
+'<div class="lens">'+
+'<strong>What this briefing is.</strong> A view of '+operatorTitle+'\'s booking flow through the lens of one driver\'s '+
+'instrumented operations data, '+periodTitle.toLowerCase()+'. The numbers below are routinely collected by the driver but not, '+
+'to our knowledge, surfaced systematically at operator level. The intent is to show what continuous operational '+
+'intelligence at this resolution would look like if applied across the fleet — and to surface where the '+
+'current allocation flow is winning, and where it is leaving value on the table.'+
+'</div>'+
+
+// ---- Headline KPIs ----
+'<h2>Headline KPIs</h2>'+
+'<div class="grid-4">'+
+  '<div class="metric"><div class="metric-label">Jobs Completed</div><div class="metric-value">'+scopeJobs.length+'</div><div class="metric-sub">across '+nDays+' working day'+(nDays!==1?'s':'')+'</div></div>'+
+  '<div class="metric"><div class="metric-label">Driver Utilisation</div><div class="metric-value accent">'+utilisationPct+'%</div><div class="metric-sub">with-passenger time ÷ out-of-home time</div></div>'+
+  '<div class="metric"><div class="metric-label">Effective Rate</div><div class="metric-value '+(effRate>=MW?'good':'bad')+'">'+pfx+rateStr(effRate)+'</div><div class="metric-sub">'+(TIPS?'incl. tips · ':'fees only · ')+'vs NLW &pound;'+MW.toFixed(2)+'/hr</div></div>'+
+  '<div class="metric"><div class="metric-label">Tip Dependency</div><div class="metric-value '+(tipDepPct>=30?'warn':'')+'">'+tipDepPct+'%</div><div class="metric-sub">of total income from customer tipping behaviour</div></div>'+
+'</div>'+
+
+// ---- Tip-Dependency Sensitivity — the centrepiece ----
+'<h2>Tip-Dependency Sensitivity</h2>'+
+'<div class="lens" style="background:#fff;border:1px solid #c9a84c;border-left:6px solid #c9a84c;">'+
+'<strong>The question this briefing exists to answer:</strong> how much of this driver\'s viability is delivered by '+
+'the published rate structure, and how much by customer tipping behaviour the operator does not control?'+
+'<br><br>'+
+'<table style="margin:6px 0;width:100%;">'+
+  '<tr style="background:#fafaf7;"><td style="padding:8px 12px;font-weight:600;width:40%;">View</td><td style="padding:8px 12px;font-weight:600;text-align:right;">Income</td><td style="padding:8px 12px;font-weight:600;text-align:right;">Effective &pound;/hr</td><td style="padding:8px 12px;font-weight:600;text-align:right;">vs NLW</td></tr>'+
+  '<tr><td style="padding:8px 12px;">With customer tips</td><td style="padding:8px 12px;text-align:right;font-weight:600;">'+money(ratedTotalInc)+(hasEst?' <span class="warn">≈</span>':'')+'</td><td style="padding:8px 12px;text-align:right;font-weight:600;" class="'+(effRateInc>=MW?'good':'bad')+'">'+pfx+rateStr(effRateInc)+'</td><td style="padding:8px 12px;text-align:right;" class="'+(effRateInc>=MW?'good':'bad')+'">'+(effRateInc>=MW?'+':'')+'&pound;'+(effRateInc-MW).toFixed(2)+'/hr</td></tr>'+
+  '<tr><td style="padding:8px 12px;">Published rate only (no tips)</td><td style="padding:8px 12px;text-align:right;font-weight:600;">'+money(ratedTotalExc)+(hasEst?' <span class="warn">≈</span>':'')+'</td><td style="padding:8px 12px;text-align:right;font-weight:600;" class="'+(effRateExc>=MW?'good':'bad')+'">'+pfx+rateStr(effRateExc)+'</td><td style="padding:8px 12px;text-align:right;" class="'+(effRateExc>=MW?'good':'bad')+'">'+(effRateExc>=MW?'+':'')+'&pound;'+(effRateExc-MW).toFixed(2)+'/hr</td></tr>'+
+  (rateGap!=null?'<tr style="background:#fff8e6;"><td style="padding:8px 12px;font-weight:600;">Gap delivered by tips</td><td style="padding:8px 12px;text-align:right;font-weight:600;" class="accent">'+money(tipsTotalAll)+'</td><td style="padding:8px 12px;text-align:right;font-weight:600;" class="accent">+&pound;'+rateGap.toFixed(2)+'/hr</td><td style="padding:8px 12px;text-align:right;font-weight:600;" class="accent">'+pctOfIncomeFromTips+'% of income</td></tr>':'')+
+'</table>'+
+'<br><strong>Read:</strong> '+tipFreqPct+'% of jobs in this period were tipped. The published rate structure delivers '+
+'<strong class="'+(effRateExc>=MW?'good':'bad')+'">'+pfx+rateStr(effRateExc)+'/hr</strong>. '+
+(effRateExc<MW?'That is <strong class="bad">below</strong> the UK National Living Wage of &pound;'+MW.toFixed(2)+'/hr. The driver reaches viability only through customer goodwill — a behaviour the operator does not control, cannot guarantee, and cannot reproduce by adjusting allocation alone.':'That is at or above the UK National Living Wage. Tip income is incremental rather than load-bearing.')+
+'</div>'+
+
+// ---- Hourly Rate Comparison ----
+'<h2>Hourly Rate Comparison</h2>'+
+barRow('UK Min Wage','£'+MW.toFixed(2),'£'+MW.toFixed(2)+'/hr','#c9a84c')+
+barRow('Target Rate','£'+TGT.toFixed(2),'£'+TGT.toFixed(2)+'/hr','#1f8a3b')+
+barRow('Realised — published rate',effRateExc,pfx+rateStr(effRateExc)+'/hr',(effRateExc>=MW?'#198754':'#b91c1c'))+
+barRow('Realised — incl. customer tips',effRateInc,pfx+rateStr(effRateInc)+'/hr',(effRateInc>=MW?'#198754':'#b91c1c'))+
+
+// ---- Driver Utilisation ----
+'<h2>Driver Utilisation</h2>'+
+'<div class="grid-2"><div>'+
+  timeBar('With passenger (productive)',M.engMin,'#1f3a52')+
+  timeBar('Own time (driver-free)',ownM,'#2ecc71')+
+  timeBar('Standby / waiting (unproductive)',waitM,'#c0392b')+
+  timeBar('Driving to pickup / admin / fuel',residMin,'#3a3a3a')+
+'</div><div>'+
+  '<h3>Empty-running ratio</h3>'+
+  '<p style="font-size:12px;color:#444;line-height:1.7;">'+
+    'Industry benchmark for chauffeur fleets: utilisation rises with allocation quality. '+
+    'This driver\'s realised utilisation is <strong class="accent">'+utilisationPct+'%</strong> '+
+    '(passenger-time ÷ out-of-home time). The corresponding <strong>'+emptyRunPct+'%</strong> '+
+    'empty-running ratio covers driving to pickups, returning home, and standby between allocations. '+
+    'Higher utilisation typically indicates better pickup-density and tighter dispatch sequencing.'+
+  '</p>'+
+'</div></div>'+
+
+// ---- Customer / Booking-Source Performance (operator-framed) ----
+(bookerRows.length>0?
+  '<h2>Booking-Source Performance</h2>'+
+  '<p style="font-size:11px;color:#666;margin:0 0 8px;">Ranked best-to-worst by effective &pound;/hr (out-of-home time). Excludes EET and pre-21-May 2026. Shows where your booking flow is generating the highest time-value vs the lowest.</p>'+
+  '<table><thead><tr>'+
+    '<th>Rank</th>'+
+    '<th>Booking Source</th>'+
+    '<th>Jobs</th>'+
+    '<th>Utilisation</th>'+
+    '<th>Unpaid share</th>'+
+    '<th>Total realised</th>'+
+    (TIPS?'<th>Avg tip · freq</th>':'')+
+    '<th>&pound;/hr OoH</th>'+
+  '</tr></thead><tbody>'+
+    bookerRows.map(function(b,idx){
+      var rankBadge=b.key==='__untagged'?'<span style="color:#888;">—</span>':'<strong>'+(idx+1)+'</strong>';
+      var pfxB=b.hasEst?'≈':'';
+      var rateColor=b.rate==null?'#888':(b.rate>=TGT?'#198754':(b.rate>=MW?'#b8860b':'#b91c1c'));
+      var srcCell=b.key==='__untagged'?'<span style="color:#888;">Untagged</span>':'<span style="background:'+bookerColor(b.key)+';color:#1a1a1a;padding:2px 8px;border-radius:5px;font-weight:600;font-size:11px;">'+bookerLabel(b.key)+'</span>';
+      var avgTip=b.jobs>0?b.tips/b.jobs:0;
+      var tipFreqB=b.jobs>0?Math.round(b.tipped/b.jobs*100):0;
+      return '<tr>'+
+        '<td>'+rankBadge+'</td>'+
+        '<td>'+srcCell+'</td>'+
+        '<td>'+b.jobs+'</td>'+
+        '<td>'+b.utilisationPct+'%</td>'+
+        '<td>'+b.unpaidPct+'%</td>'+
+        '<td>'+money(b.total)+(b.hasEst?' <span class="warn" style="font-size:10px;">('+b.estimated+' est)</span>':'')+'</td>'+
+        (TIPS?'<td>'+(avgTip>0?money(avgTip):'—')+' <span style="color:#888;">· '+tipFreqB+'%</span></td>':'')+
+        '<td style="color:'+rateColor+';font-weight:600;">'+(b.rate!=null?pfxB+rateStr(b.rate):'—')+'</td>'+
+      '</tr>';
+    }).join('')+
+  '</tbody></table>'+
+  '<p style="font-size:10px;color:#888;margin:4px 0 0;">&pound;/hr colour: <strong style="color:#198754;">green</strong> at/above target, <strong style="color:#b8860b;">amber</strong> at/above NLW, <strong style="color:#b91c1c;">red</strong> below NLW. Operator-actionable: the lowest rows are where re-pricing, re-routing or de-prioritisation would lift fleet-level economics most.</p>'
+:'')+
+
+// ---- Coverage Profile ----
+'<h2>Coverage Profile</h2>'+
+'<p style="font-size:11px;color:#666;margin:0 0 8px;">Pickup density by day-of-week and time-of-day. Shaded cells = pickups in this period. '+totalPickups+' pickup'+(totalPickups!==1?'s':'')+' mapped. Tells dispatch when this driver is actually deployed vs available capacity.</p>'+
+'<table class="coverage"><thead><tr><th></th>'+
+  BANDS.map(function(b){return '<th>'+b+'</th>';}).join('')+
+'</tr></thead><tbody>'+
+  DOW_LABELS.map(function(lbl,i){
+    return '<tr><td class="label">'+lbl+'</td>'+
+      grid[i].map(function(v){return '<td style="background:'+cellShade(v)+';color:'+(v>0?'#1a1a1a':'#bbb')+';">'+(v||'·')+'</td>';}).join('')+
+    '</tr>';
+  }).join('')+
+'</tbody></table>'+
+
+// ---- Cancellations by Booker ----
+(cancelledInPeriod.length>0?
+  '<h2>Cancellations &mdash; Operator-Actionable Detail</h2>'+
+  '<div class="grid-3">'+
+    '<div class="metric"><div class="metric-label">Cancellation Rate</div><div class="metric-value bad">'+cancelPct+'%</div><div class="metric-sub">'+cancelledInPeriod.length+' of '+totalBook+' bookings</div></div>'+
+    '<div class="metric"><div class="metric-label">Sources Identified</div><div class="metric-value">'+cancelBookerRows.length+'</div><div class="metric-sub">distinct booker'+(cancelBookerRows.length!==1?'s':'')+' affected</div></div>'+
+    '<div class="metric"><div class="metric-label">Est. Lost Revenue</div><div class="metric-value bad">'+money(cancelBookerRows.reduce(function(s,r){return s+r.lostEst;},0))+'</div><div class="metric-sub">at &pound;18 short-job tariff</div></div>'+
+  '</div>'+
+  (cancelBookerRows.length>0?
+    '<table style="margin-top:10px;"><thead><tr><th>Booking Source</th><th>Cancellations</th><th>Est. lost revenue</th></tr></thead><tbody>'+
+      cancelBookerRows.map(function(r){
+        var lbl=r.key==='__untagged'?'<em style="color:#888;">Untagged</em>':(typeof bookerLabel==='function'?bookerLabel(r.key):r.key);
+        return '<tr><td>'+lbl+'</td><td>'+r.count+'</td><td>'+money(r.lostEst)+'</td></tr>';
+      }).join('')+
+    '</tbody></table>'
+  :'')+
+  '<p style="font-size:11px;color:#666;margin:6px 0 0;">Cancellation pattern by booker is operator-actionable: which booking flows are most fragile, and which deserve tighter confirmation discipline.</p>'
+:'')+
+
+// ---- Working Time Directive Snapshot ----
+'<h2>Working Time Directive &mdash; Risk Snapshot</h2>'+
+'<div class="grid-4">'+
+  '<div class="metric"><div class="metric-label">Longest day</div><div class="metric-value '+(longest>720?'bad':(longest>600?'warn':''))+'">'+fmtMins(longest)+'</div><div class="metric-sub">'+(longestDay?fmtDate(longestDay):'—')+'</div></div>'+
+  '<div class="metric"><div class="metric-label">Days &gt;10h OoH</div><div class="metric-value '+(over10h>=3?'warn':'')+'">'+over10h+'</div><div class="metric-sub">out of '+dayOoHSorted.length+' instrumented days</div></div>'+
+  '<div class="metric"><div class="metric-label">Days &gt;12h OoH</div><div class="metric-value '+(over12h>=1?'bad':'')+'">'+over12h+'</div><div class="metric-sub">approaching daily WTD ceiling</div></div>'+
+  '<div class="metric"><div class="metric-label">Back-to-back &gt;10h</div><div class="metric-value '+(backToBack>=2?'bad':(backToBack>=1?'warn':''))+'">'+backToBack+'</div><div class="metric-sub">consecutive long days</div></div>'+
+'</div>'+
+(wtdConcern?
+  '<div class="narrative" style="border-left-color:#b91c1c;background:#fff5f5;margin-top:10px;">'+
+    '<strong>Risk indicator.</strong> This pattern (longer days, repeated days &gt;10h, back-to-back accumulation) is a '+
+    'fatigue-and-liability signal under the Working Time Regulations. Mapped across the fleet it would surface '+
+    'driver-rest exposure systematically rather than reactively.'+
+  '</div>'
+:
+  '<div class="narrative" style="margin-top:10px;">'+
+    'No acute WTD risk indicators in this period for this driver. Across the fleet, the same instrumentation would '+
+    'surface drivers approaching limits before incidents occur.'+
+  '</div>'
+)+
+
+// ---- What This Analysis Reveals — capability teaser ----
+'<div class="reveal">'+
+'<h3>What This Analysis Reveals</h3>'+
+'<p style="margin:0 0 8px;font-size:12px;color:#333;">This briefing is generated from one driver\'s instrumentation. The same capability, applied across the fleet, would answer questions the operator currently cannot:</p>'+
+'<ul>'+
+  '<li><strong>Empty-running ratio fleet-wide</strong> — and how it compares to industry benchmark.</li>'+
+  '<li><strong>Which routes deliver target &pound;/hr</strong> vs which routes are sub-NLW after empty-running.</li>'+
+  '<li><strong>Booker-level cancellation pattern</strong> — which booking flows are fragile and need intervention.</li>'+
+  '<li><strong>Time-band coverage gaps</strong> — when the fleet is over-supplied vs under-supplied, by day-of-week.</li>'+
+  '<li><strong>Fleet-wide WTD compliance exposure</strong> — drivers approaching limits before incidents.</li>'+
+  '<li><strong>Published-rate vs realised-income gap</strong> — quantifying tip-dependency across the operation.</li>'+
+  '<li><strong>Pickup-to-dropoff service-quality signal</strong> — punctuality, dwell, no-shows.</li>'+
+'</ul>'+
+'</div>'+
+
+// ---- Methodology ----
+'<h2>Methodology &mdash; Brief</h2>'+
+'<p style="font-size:11px;color:#666;line-height:1.7;">'+
+'<strong>Out-of-home time</strong> is measured from a logged "Left house" event to the next "Arrived home" event per working day (Europe/London timezone). '+
+'<strong>With-passenger time</strong> runs from "At passenger pickup" to "Passengers dropped off". '+
+'<strong>Utilisation</strong> = with-passenger ÷ out-of-home. '+
+'<strong>Effective &pound;/hr</strong> is realised income (fees '+(TIPS?'+ tips':'')+', incl. operator-published-tariff estimates where the chauffeur statement has not yet been reconciled) divided by out-of-home time for jobs with commitment events. '+
+'<strong>Cancellations</strong> are auto-detected from operator email and SMS notifications and excluded from rate calculations. '+
+'<strong>Booker-level breakdowns</strong> exclude EET-side jobs and pre-21-May 2026 records (data-quality cutoff).'+
+'</p>'+
+
+// ---- Arete brand block ----
+'<div class="arete-brand">'+
+  '<div>'+
+    '<div class="arete-wordmark">'+
+      '<span class="arete-glyph">&#9650;</span>'+
+      '<span class="arete-name">ARETE</span>'+
+    '</div>'+
+    '<div class="arete-tagline">Operational intelligence for the chauffeur industry</div>'+
+  '</div>'+
+  '<div class="arete-blurb">'+
+    'This briefing was generated from a single driver\'s instrumented operations data using '+
+    '<strong>Chauffeur HandsFree</strong> &mdash; an Arete operational toolkit. Applied across a fleet, '+
+    'it produces continuous business intelligence at this resolution. '+
+    'Contact <strong>'+driverName+'</strong> for a strategic review of what this would surface for '+operatorTitle+'.'+
+  '</div>'+
+'</div>'+
+
+'<div class="foot">Operational Intelligence Briefing &middot; generated '+generatedAt+' &middot; data source: Chauffeur HandsFree driver instrumentation</div>'+
 
 '</body></html>';
 
